@@ -85,6 +85,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now pr-conflict-bot
 
 The service listens on `127.0.0.1:8081` by default. Front it with TLS (Tailscale Funnel, Caddy, nginx — your choice).
 
+## Strict mode (recommended)
+
+Set `REQUIRE_REPO_CONFIG=true` in the env file. With strict mode on, the bot refuses to attempt resolution unless the effective verify gate has at least one non-empty step (lint, typecheck, or test) — either via env defaults or a per-repo `.pr-conflict-bot.toml`. Without strict mode, an empty verify gate trivially "passes" and the bot would push unverified resolutions.
+
+When strict mode aborts, it leaves a comment explaining what's missing. Repos opt out cleanly via `[behavior] enabled = false` in their override file.
+
 ## Per-repo overrides
 
 Drop `.pr-conflict-bot.toml` at a repo root to override defaults. See `examples/.pr-conflict-bot.toml.example`.

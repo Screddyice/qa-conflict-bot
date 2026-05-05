@@ -53,6 +53,11 @@ class Config:
     webhook_path: str  # e.g. "/hooks/github" or "/prbot/hooks/github" for path-based routing
     work_dir: Path
     log_level: str
+    require_repo_config: bool = False
+    """If True, abort with a comment when the effective verify gate has no non-empty
+    step (no lint, no typecheck, no test). This forces every repo to either ship a
+    `.pr-conflict-bot.toml` with verify commands or opt out via `enabled = false`,
+    so the bot can never push an unverified resolution."""
     allow_orgs: frozenset[str] = field(default_factory=frozenset)
 
 
@@ -104,6 +109,8 @@ def load_from_env() -> Config:
         webhook_path=os.environ.get("WEBHOOK_PATH", "/hooks/github"),
         work_dir=Path(os.environ.get("WORK_DIR", "/var/lib/pr-conflict-bot/work")).expanduser(),
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
+        require_repo_config=os.environ.get("REQUIRE_REPO_CONFIG", "false").lower()
+        in ("1", "true", "yes"),
         allow_orgs=frozenset(
             o.strip().lower()
             for o in os.environ.get("ALLOW_ORGS", "").split(",")

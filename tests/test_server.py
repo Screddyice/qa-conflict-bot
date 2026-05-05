@@ -54,6 +54,7 @@ def cfg() -> Config:
         webhook_path="/hooks/github",
         work_dir=__import__("pathlib").Path("/tmp/x"),
         log_level="INFO",
+        require_repo_config=False,
         allow_orgs=frozenset({"acme"}),
     )
 

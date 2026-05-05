@@ -141,6 +141,22 @@ async def process_job(job: PRJob, cfg: Config, gh: GitHubClient) -> None:
         conflicted = list(outcome.conflicted_files)
         L.info("conflicts", count=len(conflicted), files=conflicted)
 
+        # Compute the effective verify gate now so we can refuse to operate
+        # if it's empty under strict mode (the gate is the only safety net).
+        eff_verify = _effective_verify(cfg.verify, override)
+        if cfg.require_repo_config and not (
+            eff_verify.lint or eff_verify.typecheck or eff_verify.test
+        ):
+            failure = (
+                "this repo has no verify gate configured. Add a "
+                "`.pr-conflict-bot.toml` at the repo root with at least one of "
+                "`[verify] lint`, `typecheck`, or `test` set — or set "
+                "`[behavior] enabled = false` to opt this repo out. "
+                "The bot refuses to push resolutions it can't verify."
+            )
+            L.warning("aborting: REQUIRE_REPO_CONFIG=true and verify gate is empty")
+            return
+
         if len(conflicted) > override.max_files_per_pr:
             failure = (
                 f"{len(conflicted)} conflicted files exceeds max_files_per_pr "
@@ -176,7 +192,6 @@ async def process_job(job: PRJob, cfg: Config, gh: GitHubClient) -> None:
         )
         L.info("committed", sha=commit_sha[:8])
 
-        eff_verify = _effective_verify(cfg.verify, override)
         verify_result = await verify.run(eff_verify, repo_dir)
         if not verify_result.passed:
             failure = "verify gate failed — not pushing"
