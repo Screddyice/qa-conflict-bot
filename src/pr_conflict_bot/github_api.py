@@ -40,7 +40,8 @@ class GitHubClient:
 
     def _app_jwt(self) -> str:
         now = int(time.time())
-        payload = {"iat": now - 30, "exp": now + 540, "iss": self._cfg.app_id}
+        # PyJWT >= 2.8 requires `iss` to be a string.
+        payload = {"iat": now - 30, "exp": now + 540, "iss": str(self._cfg.app_id)}
         return jwt.encode(payload, self._cfg.private_key_pem, algorithm="RS256")
 
     async def _installation_token(self, installation_id: int) -> str:
