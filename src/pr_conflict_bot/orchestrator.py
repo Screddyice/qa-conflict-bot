@@ -42,6 +42,12 @@ def _fmt_summary_comment(
     lines = ["**pr-conflict-bot**: merge-conflict resolution attempt", ""]
     lines.append(f"Merging `origin/{base_branch}` into PR branch.")
     lines.append("")
+    # Failure path takes precedence: if something blew up before we even got to
+    # the merge step, `conflicted` will be empty but `failure` will be set.
+    # Don't lie and say "no conflicts" in that case.
+    if failure and not conflicted:
+        lines.append(f"**Did not run.** {failure}")
+        return "\n".join(lines)
     if not conflicted:
         lines.append("No conflicts found — branch already merges cleanly.")
         return "\n".join(lines)
