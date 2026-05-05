@@ -1,0 +1,26 @@
+# Drop this file (without .example) at the root of any repo the bot watches
+# to override defaults for that repo.
+
+[verify]
+lint = "ruff check ."
+typecheck = "mypy ."
+test = "pytest -q"
+timeout_seconds = 600
+
+[behavior]
+# Disable the bot for this repo without uninstalling.
+enabled = true
+
+# Glob patterns (fnmatch) — files matching these are NEVER auto-resolved.
+# Conflicts in skipped paths cause the bot to abort and leave a comment.
+skip_paths = [
+    "package-lock.json",
+    "yarn.lock",
+    "poetry.lock",
+    "uv.lock",
+    "**/migrations/*",
+    "CHANGELOG.md",
+]
+
+# Refuse to attempt resolution when conflict count exceeds this.
+max_files_per_pr = 50

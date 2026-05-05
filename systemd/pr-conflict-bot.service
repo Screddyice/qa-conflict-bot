@@ -1,0 +1,27 @@
+[Unit]
+Description=pr-conflict-bot — auto-resolve PR merge conflicts with codex
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prbot
+Group=prbot
+WorkingDirectory=/var/lib/pr-conflict-bot
+EnvironmentFile=/etc/pr-conflict-bot/env
+ExecStart=/usr/local/bin/pr-conflict-bot
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pr-conflict-bot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target
