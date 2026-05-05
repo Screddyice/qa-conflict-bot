@@ -1,0 +1,27 @@
+# pr-conflict-bot config for this repo (dogfood — bot operates on its own PRs).
+# Required by strict mode (REQUIRE_REPO_CONFIG=true on the live deployment).
+
+[verify]
+lint = "ruff check ."
+typecheck = "mypy src"
+test = "pytest -q"
+timeout_seconds = 600
+
+[behavior]
+enabled = true
+
+# Lock files + auto-generated dirs the LLM should never touch.
+skip_paths = [
+    "uv.lock",
+    "package-lock.json",
+    "yarn.lock",
+    "poetry.lock",
+    "**/migrations/*",
+    "CHANGELOG.md",
+    ".venv/**",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+    ".mypy_cache/**",
+]
+
+max_files_per_pr = 50
