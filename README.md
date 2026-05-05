@@ -40,22 +40,45 @@ If anything fails — codex left markers, verify failed, lock file conflict, rac
 
 ### 1. Create a GitHub App
 
-In your org → Settings → Developer settings → GitHub Apps → New.
+The bot authenticates as a GitHub App. You need: an App ID, a slug, a webhook
+secret, and an RSA private key (PEM). GitHub doesn't expose App creation via
+plain REST, only via the *manifest flow* — which requires one click in a
+browser. The included helper script automates everything around that click:
 
-**Permissions:**
+```bash
+python3 scripts/setup-github-app.py \
+    --webhook-url 'https://your-host.example.com/hooks/github' \
+    --name 'pr-conflict-bot' \
+    --output ~/.pr-conflict-bot/setup
+```
+
+The script:
+1. Starts a local listener on `http://localhost:8765`.
+2. Opens your browser to a page that auto-submits the manifest to GitHub.
+3. You click **"Create GitHub App"** on GitHub's confirmation page.
+4. GitHub redirects back to the local listener with a one-time code.
+5. The script exchanges the code for App credentials and writes them to your
+   chosen output directory (mode 0600):
+
+   - `app-id` — numeric App ID → `GITHUB_APP_ID`
+   - `app-slug` — slug of the App → `GITHUB_BOT_LOGIN=<slug>[bot]`
+   - `webhook-secret` → `GITHUB_WEBHOOK_SECRET`
+   - `private-key.pem` → SCP this to the server, point `GITHUB_APP_PRIVATE_KEY` at it
+
+6. Prints the install URL. Visit it and install the App on the orgs/repos you
+   want covered.
+
+**Permissions configured by the manifest:**
 - Repository → Contents: **Read & write**
 - Repository → Pull requests: **Read & write**
 - Repository → Metadata: **Read**
 - Repository → Checks: **Read**
 
-**Subscribe to events:** *Pull request*
+**Events subscribed:** *Pull request*
 
-**Webhook URL:** `https://your-host/hooks/github` (must terminate TLS).
-**Webhook secret:** generate a long random string; you'll set the same value in `GITHUB_WEBHOOK_SECRET`.
-
-Generate a private key, download the `.pem`. Note the **App ID** and the **slug** (which becomes `<slug>[bot]`).
-
-Install the App on the orgs / repos you want covered.
+**Manual alternative:** if you'd rather do it by hand, go to
+https://github.com/settings/apps/new and fill in the same permissions and
+events. The script just does the form-filling for you.
 
 ### 2. Install the bot
 
