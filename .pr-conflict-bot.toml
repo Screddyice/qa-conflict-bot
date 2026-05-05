@@ -2,10 +2,12 @@
 # Required by strict mode (REQUIRE_REPO_CONFIG=true on the live deployment).
 
 [verify]
-lint = "ruff check ."
-typecheck = "mypy src"
-test = "pytest -q"
-timeout_seconds = 600
+# Bot clones repo fresh — no deps installed. Each verify cmd installs first.
+# After first install the others are no-ops (already satisfied).
+lint = "python3 -m pip install -q -e '.[dev]' && ruff check ."
+typecheck = "python3 -m pip install -q -e '.[dev]' && mypy src"
+test = "python3 -m pip install -q -e '.[dev]' && pytest -q"
+timeout_seconds = 1200
 
 [behavior]
 enabled = true
