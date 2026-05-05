@@ -2,11 +2,11 @@
 # Required by strict mode (REQUIRE_REPO_CONFIG=true on the live deployment).
 
 [verify]
-# Bot clones repo fresh — no deps installed. Each verify cmd installs first.
-# After first install the others are no-ops (already satisfied).
-lint = "python3 -m pip install -q -e '.[dev]' && ruff check ."
-typecheck = "python3 -m pip install -q -e '.[dev]' && mypy src"
-test = "python3 -m pip install -q -e '.[dev]' && pytest -q"
+# Bot clones repo fresh + Ubuntu 24.04 blocks system pip (PEP 668).
+# Use a per-clone venv. lint creates it; typecheck/test reuse it (cwd persists).
+lint = "([ -d .vbot ] || python3 -m venv .vbot) && .vbot/bin/pip install -q -e '.[dev]' && .vbot/bin/ruff check ."
+typecheck = ".vbot/bin/mypy src"
+test = ".vbot/bin/pytest -q"
 timeout_seconds = 1200
 
 [behavior]
