@@ -134,7 +134,11 @@ async def process_job(job: PRJob, cfg: Config, gh: GitHubClient) -> None:
         )
         L = L.bind(repo_dir=str(repo_dir))
 
-        override = load_repo_override(repo_dir)
+        override = load_repo_override(
+            repo_dir,
+            default_skip_paths=cfg.default_skip_paths,
+            default_max_files_per_pr=cfg.default_max_files_per_pr,
+        )
         if not override.enabled:
             L.info("disabled by repo config")
             return

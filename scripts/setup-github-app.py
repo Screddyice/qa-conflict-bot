@@ -48,7 +48,7 @@ from pathlib import Path
 CALLBACK_HTML = b"""<!doctype html>
 <html><body style="font-family: -apple-system, sans-serif; padding: 4em; text-align: center;">
 <h2>Done.</h2>
-<p>App registered. Returning to terminal — you can close this tab.</p>
+<p>App registered. Returning to terminal - you can close this tab.</p>
 </body></html>
 """
 

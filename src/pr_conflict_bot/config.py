@@ -76,6 +76,12 @@ class Config:
     step (no lint, no typecheck, no test). This forces every repo to either ship a
     `.pr-conflict-bot.toml` with verify commands or opt out via `enabled = false`,
     so the bot can never push an unverified resolution."""
+    default_skip_paths: tuple[str, ...] = ()
+    """Glob patterns applied as the default `skip_paths` when a repo has no
+    `.pr-conflict-bot.toml`. Lets you ship org-wide lockfile/migration skips
+    without dropping a TOML in every repo."""
+    default_max_files_per_pr: int = 50
+    """Default `max_files_per_pr` when a repo has no `.pr-conflict-bot.toml`."""
     allow_orgs: frozenset[str] = field(default_factory=frozenset)
 
 
@@ -131,6 +137,10 @@ def load_from_env() -> Config:
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
         require_repo_config=os.environ.get("REQUIRE_REPO_CONFIG", "false").lower()
         in ("1", "true", "yes"),
+        default_skip_paths=tuple(
+            p.strip() for p in os.environ.get("DEFAULT_SKIP_PATHS", "").split(",") if p.strip()
+        ),
+        default_max_files_per_pr=int(os.environ.get("DEFAULT_MAX_FILES_PER_PR", "50")),
         allow_orgs=frozenset(
             o.strip().lower()
             for o in os.environ.get("ALLOW_ORGS", "").split(",")
@@ -148,10 +158,23 @@ class RepoOverride:
     enabled: bool = True
 
 
-def load_repo_override(repo_root: Path) -> RepoOverride:
+def load_repo_override(
+    repo_root: Path,
+    *,
+    default_skip_paths: tuple[str, ...] = (),
+    default_max_files_per_pr: int = 50,
+) -> RepoOverride:
+    """Load `.pr-conflict-bot.toml` if present, falling back to env-level defaults.
+
+    The defaults let the operator ship org-wide skip_paths / max_files without
+    needing a TOML in every repo.
+    """
     cfg_path = repo_root / ".pr-conflict-bot.toml"
     if not cfg_path.is_file():
-        return RepoOverride()
+        return RepoOverride(
+            skip_paths=default_skip_paths,
+            max_files_per_pr=default_max_files_per_pr,
+        )
     data = tomllib.loads(cfg_path.read_text())
     v = data.get("verify", {})
     verify = VerifyConfig(
@@ -161,9 +184,12 @@ def load_repo_override(repo_root: Path) -> RepoOverride:
         timeout_seconds=int(v.get("timeout_seconds", 600)),
     ) if v else None
     behavior = data.get("behavior", {})
+    # Repo TOML wins; env-defaults fill in only what's missing.
+    skip_paths = behavior.get("skip_paths")
+    max_files = behavior.get("max_files_per_pr")
     return RepoOverride(
         verify=verify,
-        skip_paths=tuple(behavior.get("skip_paths", [])),
-        max_files_per_pr=int(behavior.get("max_files_per_pr", 50)),
+        skip_paths=tuple(skip_paths) if skip_paths is not None else default_skip_paths,
+        max_files_per_pr=int(max_files) if max_files is not None else default_max_files_per_pr,
         enabled=bool(behavior.get("enabled", True)),
     )

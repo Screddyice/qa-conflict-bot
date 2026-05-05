@@ -55,6 +55,8 @@ def cfg() -> Config:
         work_dir=__import__("pathlib").Path("/tmp/x"),
         log_level="INFO",
         require_repo_config=False,
+        default_skip_paths=(),
+        default_max_files_per_pr=50,
         allow_orgs=frozenset({"acme"}),
     )
 

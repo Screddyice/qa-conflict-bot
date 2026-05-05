@@ -28,6 +28,8 @@ def _cfg(*, require_repo_config: bool, default_verify: VerifyConfig) -> Config:
         work_dir=Path("/tmp/x"),
         log_level="INFO",
         require_repo_config=require_repo_config,
+        default_skip_paths=(),
+        default_max_files_per_pr=50,
         allow_orgs=frozenset(),
     )
 
