@@ -1,6 +1,6 @@
 # pr-conflict-bot
 
-A GitHub bot that resolves merge conflicts on open pull requests using a code-aware LLM, then pushes the resolution back to the PR branch — so the human author can review and merge.
+A GitHub bot that resolves merge conflicts on open pull requests using claude or codex, then pushes the resolution back to the PR branch — so the human author can review and merge.
 
 **It does not auto-merge. It only makes conflicted PRs mergeable.**
 
