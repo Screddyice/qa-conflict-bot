@@ -50,6 +50,7 @@ class Config:
     identity: BotIdentity
     listen_host: str
     listen_port: int
+    webhook_path: str  # e.g. "/hooks/github" or "/prbot/hooks/github" for path-based routing
     work_dir: Path
     log_level: str
     allow_orgs: frozenset[str] = field(default_factory=frozenset)
@@ -100,6 +101,7 @@ def load_from_env() -> Config:
         ),
         listen_host=os.environ.get("LISTEN_HOST", "127.0.0.1"),
         listen_port=int(os.environ.get("LISTEN_PORT", "8081")),
+        webhook_path=os.environ.get("WEBHOOK_PATH", "/hooks/github"),
         work_dir=Path(os.environ.get("WORK_DIR", "/var/lib/pr-conflict-bot/work")).expanduser(),
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
         allow_orgs=frozenset(

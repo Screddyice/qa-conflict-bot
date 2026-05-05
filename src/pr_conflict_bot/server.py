@@ -134,7 +134,7 @@ def make_app(cfg: Config, queue: asyncio.Queue[PRJob]) -> web.Application:
         return web.Response(status=202)
 
     app.router.add_get("/health", health)
-    app.router.add_post("/hooks/github", github)
+    app.router.add_post(cfg.webhook_path, github)
     return app
 
 

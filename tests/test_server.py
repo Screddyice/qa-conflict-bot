@@ -51,6 +51,7 @@ def cfg() -> Config:
         identity=BotIdentity(),
         listen_host="127.0.0.1",
         listen_port=8081,
+        webhook_path="/hooks/github",
         work_dir=__import__("pathlib").Path("/tmp/x"),
         log_level="INFO",
         allow_orgs=frozenset({"acme"}),
