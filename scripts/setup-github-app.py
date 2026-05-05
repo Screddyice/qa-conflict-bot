@@ -44,7 +44,6 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-
 CALLBACK_HTML = b"""<!doctype html>
 <html><body style="font-family: -apple-system, sans-serif; padding: 4em; text-align: center;">
 <h2>Done.</h2>
@@ -67,7 +66,7 @@ def index_html(manifest: dict) -> bytes:
 
 def make_handler(manifest: dict, result: dict, done: threading.Event) -> type:
     class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             path = urllib.parse.urlsplit(self.path)
             if path.path == "/":
                 body = index_html(manifest)
@@ -159,7 +158,7 @@ def main() -> int:
         return 1
     server.shutdown()
 
-    print(f"got manifest code; converting…")
+    print("got manifest code; converting…")
     app = convert_code(result["code"])
 
     (output / "app-id").write_text(str(app["id"]))
