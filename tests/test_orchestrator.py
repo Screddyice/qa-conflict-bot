@@ -6,9 +6,9 @@ from pathlib import Path
 
 from pr_conflict_bot.config import (
     BotIdentity,
-    CodexConfig,
     Config,
     GitHubAppConfig,
+    LLMConfig,
     RepoOverride,
     VerifyConfig,
 )
@@ -19,7 +19,7 @@ def _cfg(*, require_repo_config: bool, default_verify: VerifyConfig) -> Config:
         github=GitHubAppConfig(
             app_id=1, private_key_pem="-----", webhook_secret="x", bot_login="b[bot]"
         ),
-        codex=CodexConfig(),
+        llm=LLMConfig(),
         verify=default_verify,
         identity=BotIdentity(),
         listen_host="127.0.0.1",

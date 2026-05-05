@@ -9,9 +9,9 @@ import pytest
 
 from pr_conflict_bot.config import (
     BotIdentity,
-    CodexConfig,
     Config,
     GitHubAppConfig,
+    LLMConfig,
     VerifyConfig,
 )
 from pr_conflict_bot.server import _should_handle, _verify_signature
@@ -46,7 +46,7 @@ def cfg() -> Config:
             webhook_secret="x",
             bot_login="pr-conflict-bot[bot]",
         ),
-        codex=CodexConfig(),
+        llm=LLMConfig(),
         verify=VerifyConfig(),
         identity=BotIdentity(),
         listen_host="127.0.0.1",

@@ -1,7 +1,8 @@
 """Main flow: dequeue PR jobs, resolve conflicts, push back, comment.
 
-The orchestrator owns git. Codex is scoped to producing resolved file content for
-one file at a time. The verify gate is the safety net — nothing pushes if it fails.
+The orchestrator owns git. The LLM (Claude or Codex) is scoped to producing
+resolved file content for one file at a time. The verify gate is the safety
+net — nothing pushes if it fails.
 """
 
 from __future__ import annotations
@@ -12,8 +13,8 @@ from pathlib import Path
 
 import structlog
 
-from . import codex, git_ops, verify
-from .config import CodexConfig, Config, RepoOverride, VerifyConfig, load_repo_override
+from . import git_ops, llm, verify
+from .config import Config, LLMConfig, RepoOverride, VerifyConfig, load_repo_override
 from .github_api import GitHubClient
 from .server import PRJob
 
@@ -78,7 +79,7 @@ def _fmt_summary_comment(
 
 
 async def _resolve_one_file(
-    repo_dir: Path, base_ref: str, file_path: str, codex_cfg: CodexConfig
+    repo_dir: Path, base_ref: str, file_path: str, llm_cfg: LLMConfig
 ) -> None:
     # PR-side intent: `git diff --merge-base <base> HEAD -- <file>`
     head_diff = await git_ops.diff_against_merge_base(repo_dir, "HEAD", base_ref, file_path)
@@ -87,19 +88,18 @@ async def _resolve_one_file(
 
     conflicted_content = await git_ops.read_conflicted_file(repo_dir, file_path)
 
-    req = codex.ResolveRequest(
+    req = llm.ResolveRequest(
         repo_dir=repo_dir,
         file_path=file_path,
         head_diff=head_diff,
         base_diff=base_diff,
         conflicted_content=conflicted_content,
     )
-    await codex.resolve_file(req, codex_cfg)
+    await llm.resolve_file(req, llm_cfg)
 
-    # Verify codex actually removed the markers.
+    # Verify the LLM actually removed the markers.
     if await git_ops.has_conflict_markers(repo_dir, file_path):
-        from .codex import CodexError
-        raise CodexError(f"codex left conflict markers in {file_path}")
+        raise llm.LLMError(f"{llm_cfg.backend} left conflict markers in {file_path}")
 
 
 async def process_job(job: PRJob, cfg: Config, gh: GitHubClient) -> None:
@@ -171,7 +171,7 @@ async def process_job(job: PRJob, cfg: Config, gh: GitHubClient) -> None:
                 L.info("skip path", file=f)
                 continue
             try:
-                await _resolve_one_file(repo_dir, f"origin/{job.base_branch}", f, cfg.codex)
+                await _resolve_one_file(repo_dir, f"origin/{job.base_branch}", f, cfg.llm)
                 resolved.append(f)
                 L.info("resolved", file=f)
             except Exception as e:

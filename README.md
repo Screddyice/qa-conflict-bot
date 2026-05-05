@@ -4,7 +4,12 @@ A GitHub bot that resolves merge conflicts on open pull requests using a code-aw
 
 **It does not auto-merge. It only makes conflicted PRs mergeable.**
 
-The default LLM backend is [OpenAI Codex CLI](https://github.com/openai/codex), but the wrapper is a thin subprocess shim — anything with an equivalent `exec` interface can drop in.
+Two LLM backends supported, both billed against the model vendor's subscription (no per-token API charges):
+
+- **`claude`** (default) — [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) headless mode (`claude -p`). Auth via `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, runs against your Claude Pro/Max subscription.
+- **`codex`** — [OpenAI Codex CLI](https://github.com/openai/codex) (`codex exec`). Auth via `codex login` on the host, runs against your ChatGPT Plus/Pro subscription.
+
+Set `LLM_BACKEND` in the env file to pick.
 
 ## What it does
 
@@ -54,7 +59,9 @@ Install the App on the orgs / repos you want covered.
 
 ### 2. Install the bot
 
-Requires Python 3.11+ and a working `codex` CLI on the host (already authenticated).
+Requires Python 3.11+ and one of:
+- `claude` CLI on the host (with `CLAUDE_CODE_OAUTH_TOKEN` in env), **or**
+- `codex` CLI on the host (already authenticated via `codex login`).
 
 ```bash
 git clone https://github.com/Screddyice/pr-conflict-bot
@@ -134,7 +141,7 @@ For each protected branch (typically `main`):
 │   1. clone --branch <pr_branch>                                 │
 │   2. git merge origin/<base>                                    │
 │   3. for each conflicted file:                                  │
-│        codex exec --full-auto --sandbox workspace-write         │
+│        claude -p  (or codex exec)                               │
 │        with prompt = head_diff + base_diff + conflicted_content │
 │   4. lint && typecheck && test                                  │
 │   5. git push --force-with-lease                                │
@@ -149,7 +156,7 @@ For each protected branch (typically `main`):
 | `server.py` | aiohttp webhook receiver; HMAC verify; enqueue |
 | `orchestrator.py` | The flow above. Owns git. |
 | `git_ops.py` | clone, merge, diff helpers, push-with-lease |
-| `codex.py` | Subprocess wrapper for `codex exec` |
+| `llm.py` | Subprocess wrappers for `claude -p` and `codex exec` (selected via `LLM_BACKEND`) |
 | `verify.py` | Lint / typecheck / test runner |
 | `github_api.py` | App auth (JWT → installation token), comments, dismiss reviews |
 | `config.py` | Env-driven config + per-repo TOML overrides |

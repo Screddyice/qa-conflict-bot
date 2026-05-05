@@ -21,10 +21,28 @@ class GitHubAppConfig:
 
 
 @dataclass(frozen=True)
-class CodexConfig:
-    binary: str = "codex"
-    sandbox: str = "workspace-write"
+class LLMConfig:
+    """LLM backend used to resolve a single conflicted file.
+
+    Two backends supported. Both are billed-as-subscription, not per-token API.
+    - "claude": Claude Code CLI in headless mode (`claude -p`). Auth via
+      CLAUDE_CODE_OAUTH_TOKEN (generated on a desktop with `claude setup-token`).
+      Charges against your Claude Pro/Max subscription.
+    - "codex": OpenAI Codex CLI (`codex exec`). Auth via `codex login` on
+      the host. Charges against your ChatGPT Plus/Pro subscription.
+    """
+    backend: str = "claude"
+    binary: str = ""  # empty → default ("claude" or "codex")
     extra_args: tuple[str, ...] = ()
+    # claude backend only
+    oauth_token: str = ""
+    # codex backend only
+    sandbox: str = "workspace-write"
+
+    def resolved_binary(self) -> str:
+        if self.binary:
+            return self.binary
+        return "claude" if self.backend == "claude" else "codex"
 
 
 @dataclass(frozen=True)
@@ -45,7 +63,7 @@ class BotIdentity:
 @dataclass(frozen=True)
 class Config:
     github: GitHubAppConfig
-    codex: CodexConfig
+    llm: LLMConfig
     verify: VerifyConfig
     identity: BotIdentity
     listen_host: str
@@ -85,12 +103,14 @@ def load_from_env() -> Config:
             webhook_secret=_required("GITHUB_WEBHOOK_SECRET"),
             bot_login=_required("GITHUB_BOT_LOGIN"),
         ),
-        codex=CodexConfig(
-            binary=os.environ.get("CODEX_BIN", "codex"),
-            sandbox=os.environ.get("CODEX_SANDBOX", "workspace-write"),
+        llm=LLMConfig(
+            backend=os.environ.get("LLM_BACKEND", "claude").lower(),
+            binary=os.environ.get("LLM_BIN", ""),
             extra_args=tuple(
-                a for a in os.environ.get("CODEX_EXTRA_ARGS", "").split() if a
+                a for a in os.environ.get("LLM_EXTRA_ARGS", "").split() if a
             ),
+            oauth_token=os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""),
+            sandbox=os.environ.get("CODEX_SANDBOX", "workspace-write"),
         ),
         verify=VerifyConfig(
             lint=os.environ.get("VERIFY_LINT", ""),
