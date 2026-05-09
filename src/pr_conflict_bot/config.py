@@ -83,6 +83,12 @@ class Config:
     default_max_files_per_pr: int = 50
     """Default `max_files_per_pr` when a repo has no `.pr-conflict-bot.toml`."""
     allow_orgs: frozenset[str] = field(default_factory=frozenset)
+    allow_users: frozenset[str] = field(default_factory=frozenset)
+    """If non-empty, only PRs whose author's GitHub login is in this set
+    will be handled. Comparison is case-insensitive (logins normalized to
+    lower-case at load time). Empty set means "no user filter" — all PRs
+    pass this gate. Useful when the App is installed org-wide but should
+    only act on a specific operator's PRs."""
 
 
 def _required(key: str) -> str:
@@ -145,6 +151,11 @@ def load_from_env() -> Config:
             o.strip().lower()
             for o in os.environ.get("ALLOW_ORGS", "").split(",")
             if o.strip()
+        ),
+        allow_users=frozenset(
+            u.strip().lower()
+            for u in os.environ.get("ALLOW_USERS", "").split(",")
+            if u.strip()
         ),
     )
 

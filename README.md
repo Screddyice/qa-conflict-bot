@@ -121,6 +121,15 @@ Set `REQUIRE_REPO_CONFIG=true` in the env file. With strict mode on, the bot ref
 
 When strict mode aborts, it leaves a comment explaining what's missing. Repos opt out cleanly via `[behavior] enabled = false` in their override file.
 
+## Scoping which PRs trigger the bot
+
+The bot is triggered by every `pull_request` webhook from every install. Two env vars narrow that down:
+
+- `ALLOW_ORGS` — comma-separated list of GitHub orgs the bot may operate on (e.g. `acme,acme-labs`). Empty = all orgs allowed. The hardcoded `DENY_ORGS` (`mycliqk`, `cliqk`) overrides this — those orgs are never touched.
+- `ALLOW_USERS` — comma-separated list of GitHub login names whose PRs the bot will handle (e.g. `screddyice`). Empty = any author's PR is fair game. **Use this to scope a single-operator install** so the bot only acts on your own PRs even though the App is installed org-wide.
+
+Both are case-insensitive. `ALLOW_USERS` is checked after `ALLOW_ORGS`, so you can run an org-wide install with personal-only firing.
+
 ## Per-repo overrides
 
 Drop `.pr-conflict-bot.toml` at a repo root to override defaults. See `examples/.pr-conflict-bot.toml.example`.

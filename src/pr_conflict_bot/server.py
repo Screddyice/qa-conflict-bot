@@ -19,6 +19,13 @@ from .github_api import GitHubClient
 log = structlog.get_logger()
 
 
+# Hard-coded org denylist. The bot must never act on PRs in these orgs, even
+# if the App is mistakenly installed there or ALLOW_ORGS is misconfigured. The
+# Cliqk platform (`mycliqk` GitHub org) is hands-off — see the operator's
+# `no_cliqk_actions` rule. Checked before the allowlist so env cannot override.
+DENY_ORGS: frozenset[str] = frozenset({"mycliqk", "cliqk"})
+
+
 @dataclass(frozen=True)
 class PRJob:
     delivery_id: str
@@ -60,8 +67,14 @@ def _should_handle(
         return f"PR state={pr.get('state')}"
 
     org = (payload.get("repository", {}).get("owner", {}).get("login") or "").lower()
+    if org in DENY_ORGS:
+        return f"org {org!r} is in DENY_ORGS (hands-off)"
     if cfg.allow_orgs and org not in cfg.allow_orgs:
         return f"org {org!r} not in ALLOW_ORGS"
+
+    pr_author = (pr.get("user", {}).get("login") or "").lower()
+    if cfg.allow_users and pr_author not in cfg.allow_users:
+        return f"PR author {pr_author!r} not in ALLOW_USERS"
 
     # Push-loop guard: skip if this event was triggered by ourselves.
     if sender_type == "Bot" and sender_login == cfg.github.bot_login:
