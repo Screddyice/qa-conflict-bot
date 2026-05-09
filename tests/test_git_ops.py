@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import subprocess
 from pathlib import Path
@@ -68,6 +69,63 @@ async def test_merge_detects_conflict(conflict_repo: Path, tmp_path: Path) -> No
         assert await git_ops.has_conflict_markers(repo, "f.txt")
     finally:
         shutil.rmtree(repo, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_branch_not_found_raises_specific_exception(
+    conflict_repo: Path, tmp_path: Path
+) -> None:
+    """When the PR branch is gone from origin, raise BranchNotFound (not a generic GitError).
+
+    This lets the orchestrator distinguish "PR was closed/branch deleted before
+    we got there" from real failures and skip silently instead of posting an
+    alarming comment.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    spec = git_ops.CloneSpec(
+        clone_url=str(conflict_repo),
+        pr_branch="branch-that-does-not-exist",
+        base_branch="main",
+        pr_head_sha="0" * 40,
+        work_dir=work,
+    )
+    with pytest.raises(git_ops.BranchNotFound):
+        await git_ops.clone_pr(spec, git_name="t", git_email="t@x")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_clones_use_distinct_dirs(
+    conflict_repo: Path, tmp_path: Path
+) -> None:
+    """Two concurrent clones with identical (clone_url, pr_branch) must not collide.
+
+    Regression test for the deterministic-hash dir bug that caused Job B's
+    rmtree to delete Job A's in-flight clone.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    pr_head_sha = subprocess.check_output(
+        ["git", "-C", str(conflict_repo), "rev-parse", "feature"], text=True
+    ).strip()
+    spec = git_ops.CloneSpec(
+        clone_url=str(conflict_repo),
+        pr_branch="feature",
+        base_branch="main",
+        pr_head_sha=pr_head_sha,
+        work_dir=work,
+    )
+    repos = await asyncio.gather(
+        git_ops.clone_pr(spec, git_name="t", git_email="t@x"),
+        git_ops.clone_pr(spec, git_name="t", git_email="t@x"),
+    )
+    try:
+        assert repos[0] != repos[1]
+        assert (repos[0] / ".git").is_dir()
+        assert (repos[1] / ".git").is_dir()
+    finally:
+        for r in repos:
+            shutil.rmtree(r, ignore_errors=True)
 
 
 @pytest.mark.asyncio

@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 
 class GitError(RuntimeError):
     pass
+
+
+class BranchNotFound(GitError):
+    """The PR's head branch no longer exists on origin (PR closed or branch deleted before we cloned)."""
 
 
 @dataclass(frozen=True)
@@ -58,14 +63,28 @@ async def _run(
 
 async def clone_pr(spec: CloneSpec, *, git_name: str, git_email: str) -> Path:
     """Shallow-ish clone of the PR branch with the base also fetched. Returns the repo root."""
-    repo_dir = spec.work_dir / f"clone-{abs(hash((spec.clone_url, spec.pr_branch)))}"
-    if repo_dir.exists():
-        shutil.rmtree(repo_dir)
-    repo_dir.parent.mkdir(parents=True, exist_ok=True)
+    spec.work_dir.mkdir(parents=True, exist_ok=True)
+    # Per-job unique dir. A deterministic hash of (clone_url, pr_branch) raced
+    # whenever two webhook events for the same PR fired near-simultaneously, or
+    # two PRs shared a branch name — Job B's rmtree would nuke Job A's in-flight
+    # clone.
+    repo_dir = spec.work_dir / f"clone-{uuid.uuid4().hex}"
 
-    await _run(
-        ["git", "clone", "--no-tags", "--branch", spec.pr_branch, spec.clone_url, str(repo_dir)]
-    )
+    try:
+        await _run(
+            ["git", "clone", "--no-tags", "--branch", spec.pr_branch, spec.clone_url, str(repo_dir)]
+        )
+    except GitError as e:
+        shutil.rmtree(repo_dir, ignore_errors=True)
+        msg = str(e)
+        # Branch was deleted between webhook arrival and clone — the PR was
+        # closed or merged. Surface this distinctly so the orchestrator can
+        # skip silently instead of posting an "unexpected error" comment.
+        if "Remote branch" in msg and "not found in upstream origin" in msg:
+            raise BranchNotFound(
+                f"PR branch '{spec.pr_branch}' no longer exists on origin"
+            ) from e
+        raise
     # Configure identity, conflict style, and rerere for cache reuse across re-runs.
     for args in [
         ["config", "user.name", git_name],

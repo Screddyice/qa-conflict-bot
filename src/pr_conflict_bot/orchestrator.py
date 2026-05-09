@@ -119,6 +119,7 @@ async def process_job(job: PRJob, cfg: Config, gh: GitHubClient) -> None:
     resolved: list[str] = []
     skipped: list[str] = []
     verify_result: verify.VerifyResult | None = None
+    skip_comment = False
 
     try:
         clone_url = await gh.clone_url(job.installation_id, job.owner, job.repo)
@@ -213,25 +214,32 @@ async def process_job(job: PRJob, cfg: Config, gh: GitHubClient) -> None:
         pushed_sha = commit_sha
         L.info("pushed", sha=pushed_sha[:8])
 
+    except git_ops.BranchNotFound as e:
+        # PR branch was deleted before we could clone (PR closed or fast-merged
+        # by another tool). Nothing actionable; skip silently — no PR comment,
+        # no stack trace.
+        L.info("skip: branch gone", reason=str(e))
+        skip_comment = True
     except Exception as e:
         failure = f"unexpected error: {e}"
         L.exception("job failed")
     finally:
-        try:
-            comment = _fmt_summary_comment(
-                base_branch=job.base_branch,
-                conflicted=conflicted,
-                resolved=resolved,
-                skipped=skipped,
-                verify_result=verify_result,
-                pushed_sha=pushed_sha,
-                failure=failure,
-            )
-            await gh.post_issue_comment(
-                job.installation_id, job.owner, job.repo, job.pr_number, comment
-            )
-        except Exception:
-            L.exception("could not post summary comment")
+        if not skip_comment:
+            try:
+                comment = _fmt_summary_comment(
+                    base_branch=job.base_branch,
+                    conflicted=conflicted,
+                    resolved=resolved,
+                    skipped=skipped,
+                    verify_result=verify_result,
+                    pushed_sha=pushed_sha,
+                    failure=failure,
+                )
+                await gh.post_issue_comment(
+                    job.installation_id, job.owner, job.repo, job.pr_number, comment
+                )
+            except Exception:
+                L.exception("could not post summary comment")
         if repo_dir is not None:
             await git_ops.cleanup(repo_dir)
 
