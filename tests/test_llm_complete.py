@@ -46,3 +46,17 @@ async def test_complete_codex_is_read_only(monkeypatch: pytest.MonkeyPatch) -> N
 async def test_complete_unknown_backend_raises() -> None:
     with pytest.raises(llm.LLMError):
         await llm.complete("x", LLMConfig(backend="bogus"))
+
+
+async def test_complete_claude_without_token_omits_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    captured: dict[str, object] = {}
+
+    async def fake_run_capture(cmd: list[str], *, cwd: Path | None, env: dict[str, str], timeout: float) -> str:
+        captured["env"] = env
+        return "ok"
+
+    monkeypatch.setattr(llm, "_run_capture", fake_run_capture)
+    await llm.complete("x", LLMConfig(backend="claude"))  # no oauth_token
+
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in captured["env"]

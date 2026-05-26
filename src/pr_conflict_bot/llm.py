@@ -126,6 +126,7 @@ async def _run_capture(
     if proc.returncode != 0:
         raise LLMError(
             f"{cmd[0]} failed (rc={proc.returncode}):\n"
+            f"stdout:\n{stdout_b.decode(errors='replace')}\n"
             f"stderr:\n{stderr_b.decode(errors='replace')}"
         )
     return stdout_b.decode(errors="replace")
