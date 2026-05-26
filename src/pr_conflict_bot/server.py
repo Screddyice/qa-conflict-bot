@@ -83,10 +83,16 @@ def _should_handle(
     return None
 
 
-def make_app(cfg: Config, queue: asyncio.Queue[PRJob]) -> web.Application:
+def make_app(
+    cfg: Config,
+    queue: asyncio.Queue[PRJob],
+    *,
+    qa_queue: asyncio.Queue[PRJob] | None = None,
+) -> web.Application:
     app = web.Application()
     app["cfg"] = cfg
     app["queue"] = queue
+    app["qa_queue"] = qa_queue
 
     async def health(_req: web.Request) -> web.Response:
         return web.json_response({"ok": True})
@@ -136,6 +142,8 @@ def make_app(cfg: Config, queue: asyncio.Queue[PRJob]) -> web.Application:
             sender_type=sender_type,
         )
         await queue.put(job)
+        if qa_queue is not None:
+            await qa_queue.put(job)
         log.info(
             "enqueued",
             delivery=delivery,

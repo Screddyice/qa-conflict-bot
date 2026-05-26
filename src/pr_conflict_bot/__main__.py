@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 
@@ -11,6 +12,7 @@ import structlog
 
 from .config import Config, ConfigError, load_from_env
 from .orchestrator import worker
+from .qa.orchestrator import default_deps, qa_worker
 from .server import GitHubClient, PRJob, make_app, serve, with_session
 
 
@@ -36,12 +38,20 @@ def _configure_logging(level: str) -> None:
 
 async def _run(cfg: Config, num_workers: int = 2) -> None:
     queue: asyncio.Queue[PRJob] = asyncio.Queue(maxsize=128)
-    app = make_app(cfg, queue)
+    qa_queue: asyncio.Queue[PRJob] = asyncio.Queue(maxsize=128)
+    app = make_app(cfg, queue, qa_queue=qa_queue)
     session = await with_session()
     gh = GitHubClient(cfg.github, session)
 
+    browse_binary = os.environ.get("QA_BROWSE_BIN", "browse")
+    qa_deps = default_deps(cfg, browse_binary)
+
     workers = [
         asyncio.create_task(worker(queue, cfg, gh), name=f"worker-{i}")
+        for i in range(num_workers)
+    ]
+    workers += [
+        asyncio.create_task(qa_worker(qa_queue, cfg, gh, qa_deps), name=f"qa-worker-{i}")
         for i in range(num_workers)
     ]
     await serve(cfg, app)
