@@ -1,6 +1,6 @@
 [project]
 name = "pr-conflict-bot"
-version = "0.1.0"
+version = "0.2.0"
 description = "GitHub bot that resolves merge conflicts on PRs using a code-aware LLM (Codex by default)."
 readme = "README.md"
 license = { text = "MIT" }

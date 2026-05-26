@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -55,6 +56,22 @@ class VerifyConfig:
 
 
 @dataclass(frozen=True)
+class QAConfig:
+    """Per-repo QA-mode settings from the `[qa]` table of .pr-conflict-bot.toml.
+
+    QA is opt-in: `enabled` defaults to False so no repo runs QA until it asks.
+    `mode = "fix"` is reserved for M4 and hard-blocked on RS21 repos there.
+    """
+    enabled: bool = False
+    mode: str = "report"            # "report" | "fix"
+    tier: str = "standard"          # "quick" | "standard" | "exhaustive"
+    lens: tuple[str, ...] = ("functional",)
+    url: str = ""                   # start-command fallback target
+    start: str = ""                 # command to serve the app
+    build: str = ""                 # optional pre-start build command
+
+
+@dataclass(frozen=True)
 class BotIdentity:
     git_name: str = "pr-conflict-bot"
     git_email: str = "pr-conflict-bot@users.noreply.github.com"
@@ -89,6 +106,12 @@ class Config:
     lower-case at load time). Empty set means "no user filter" — all PRs
     pass this gate. Useful when the App is installed org-wide but should
     only act on a specific operator's PRs."""
+    linear_tokens: dict[str, str] = field(default_factory=dict)
+    """Map of GitHub owner (lower-cased) -> Linear API token, parsed from the
+    `LINEAR_TOKENS` env var (JSON object). When QA finds issues on a PR whose
+    owner has a token here, it also posts the findings to that PR's Linear issue.
+    Owners absent from the map (e.g. repos with no Linear) are silently skipped.
+    Kept out of the repo TOML on purpose — these are secrets, server-side only."""
 
 
 def _required(key: str) -> str:
@@ -96,6 +119,20 @@ def _required(key: str) -> str:
     if not val:
         raise ConfigError(f"Required environment variable {key} is not set")
     return val
+
+
+def _parse_linear_tokens(raw: str) -> dict[str, str]:
+    """Parse the LINEAR_TOKENS env (JSON owner->token). Returns {} on empty or
+    malformed input — a bad value disables Linear posting, never crashes boot."""
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k).lower(): str(v) for k, v in data.items() if v}
 
 
 def _read_private_key(path_or_inline: str) -> str:
@@ -157,6 +194,7 @@ def load_from_env() -> Config:
             for u in os.environ.get("ALLOW_USERS", "").split(",")
             if u.strip()
         ),
+        linear_tokens=_parse_linear_tokens(os.environ.get("LINEAR_TOKENS", "")),
     )
 
 
@@ -167,6 +205,7 @@ class RepoOverride:
     skip_paths: tuple[str, ...] = ()
     max_files_per_pr: int = 50
     enabled: bool = True
+    qa: QAConfig = field(default_factory=QAConfig)
 
 
 def load_repo_override(
@@ -195,6 +234,18 @@ def load_repo_override(
         timeout_seconds=int(v.get("timeout_seconds", 600)),
     ) if v else None
     behavior = data.get("behavior", {})
+    q = data.get("qa", {})
+    # Always construct QAConfig; `enabled=False` (not None) is the opt-out sentinel,
+    # unlike `verify` which is None when its section is absent.
+    qa = QAConfig(
+        enabled=bool(q.get("enabled", False)),
+        mode=str(q.get("mode", "report")),  # "report" | "fix" — validated at QA-run time, not here
+        tier=str(q.get("tier", "standard")),
+        lens=tuple(str(s) for s in q.get("lens", ["functional"])),
+        url=str(q.get("url", "")),
+        start=str(q.get("start", "")),
+        build=str(q.get("build", "")),
+    )
     # Repo TOML wins; env-defaults fill in only what's missing.
     skip_paths = behavior.get("skip_paths")
     max_files = behavior.get("max_files_per_pr")
@@ -203,4 +254,5 @@ def load_repo_override(
         skip_paths=tuple(skip_paths) if skip_paths is not None else default_skip_paths,
         max_files_per_pr=int(max_files) if max_files is not None else default_max_files_per_pr,
         enabled=bool(behavior.get("enabled", True)),
+        qa=qa,
     )

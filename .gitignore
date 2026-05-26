@@ -18,3 +18,13 @@ htmlcov/
 
 work/
 .DS_Store
+.gstack/
+# Claude Harness - Ephemeral/Per-Session State
+.claude-harness/sessions/
+.claude-harness/memory/compaction-backups/
+.claude-harness/memory/working/
+# Claude Code - Local settings
+.claude/settings.local.json
+# QA mode artifacts
+.qa-screenshot.png
+.qa/

@@ -144,6 +144,69 @@ skip_paths = ["package-lock.json", "**/migrations/*"]
 max_files_per_pr = 50
 ```
 
+## QA mode (report-only)
+
+QA mode is a second, independent job flow that runs alongside conflict
+resolution. On a PR in a repo that opts in, it builds and serves the PR
+checkout, captures the running page with a headless browser, asks the
+configured LLM backend for a findings judgment, and posts a QA report
+comment. **In this milestone (M1) it is report-only — it never edits code.**
+
+It is **opt-in per repo**: nothing runs until a repo adds `[qa] enabled = true`
+to its `.pr-conflict-bot.toml`.
+
+```toml
+[qa]
+enabled = true
+mode    = "report"          # "report" only in M1 ("fix" is reserved for later)
+tier    = "standard"        # "quick" | "standard" | "exhaustive"
+lens    = ["functional"]    # review lenses to apply
+url     = "http://localhost:3000"   # where the started app will respond
+start   = "npm run dev"     # command that serves the app (run in the checkout)
+build   = "npm run build"   # optional pre-start build command
+```
+
+`start`/`build` come from the repo's own override file — the same
+owner-controlled trust model as the `[verify]` commands — and are run in the
+PR checkout. QA waits for `url` to respond, captures it, judges it, comments,
+then tears the server (and its child process group) down.
+
+**Host dependencies.** The browser engine is gstack's `browse` (vendored under
+`vendor/browse/`, MIT — see `NOTICE`), which needs **Bun** and a **headless
+Chromium** on the host. Point the bot at the built binary with `QA_BROWSE_BIN`
+(default: `browse` on `PATH`):
+
+```bash
+QA_BROWSE_BIN=/usr/local/bin/browse
+```
+
+The vendored gstack `browse` is a **stateful session daemon** (one persistent
+headless Chromium per process cwd), so `SubprocessBrowse` snapshots a page by
+running a short command sequence against it — `goto <url>` (HTTP status),
+`text` (visible text), `console --errors`, and a best-effort `screenshot`. The
+daemon auto-starts on first use and is left running for reuse; captures are
+serialized with a lock because the daemon has a single active tab. The bot runs
+`browse` with its work dir as cwd so screenshots land inside the engine's path
+sandbox. `tests/test_qa_browse_smoke.py` drives the real binary end-to-end (it
+skips when no `browse` is on `PATH`).
+
+### Posting QA findings to Linear
+
+When QA **finds issues**, it can mirror the report to the PR's Linear issue (in
+addition to the PR comment). This is opt-in per GitHub owner via a server-side
+`LINEAR_TOKENS` env var — a JSON map of owner → Linear API token:
+
+```bash
+LINEAR_TOKENS='{"your-org":"lin_api_xxx","your-other-org":"lin_api_yyy"}'
+```
+
+The bot resolves the Linear issue by looking up the PR's html URL via Linear's
+`attachmentsForURL` (Linear's GitHub integration attaches the PR to its issue),
+so it never creates tickets — it comments on the one that's already linked.
+Owners with no token, or PRs with no linked Linear issue, are skipped silently.
+A clean QA pass never posts to Linear. The whole step is best-effort: a Linear
+failure is logged and never breaks the PR comment or the QA flow.
+
 ## Recommended branch protection
 
 For each protected branch (typically `main`):
@@ -191,7 +254,8 @@ For each protected branch (typically `main`):
 | `llm.py` | Subprocess wrappers for `claude -p` and `codex exec` (selected via `LLM_BACKEND`) |
 | `verify.py` | Lint / typecheck / test runner |
 | `github_api.py` | App auth (JWT → installation token), comments, dismiss reviews |
-| `config.py` | Env-driven config + per-repo TOML overrides |
+| `config.py` | Env-driven config + per-repo TOML overrides (incl. `[qa]`) |
+| `qa/` | Report-only QA flow: `orchestrator` (clone→serve→capture→judge→comment), `url_resolver`, `browse` engine seam, `methodology` prompts, `report` formatting. Independent worker pool; conflict flow untouched. |
 
 ## Failure modes
 
