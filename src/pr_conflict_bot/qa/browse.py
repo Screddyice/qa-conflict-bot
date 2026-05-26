@@ -55,9 +55,12 @@ class SubprocessBrowse:
         self._binary = binary
 
     async def _run_json(self, cmd: list[str], *, timeout: float) -> dict[str, object]:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except OSError as e:
+            raise BrowseError(f"could not launch browse ({cmd[0]!r}): {e}") from e
         try:
             out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except TimeoutError as e:
@@ -65,10 +68,11 @@ class SubprocessBrowse:
             await proc.wait()
             raise BrowseError(f"browse timed out after {timeout}s") from e
         if proc.returncode != 0:
-            raise BrowseError(
-                f"browse failed (rc={proc.returncode}): {err_b.decode(errors='replace')}"
-            )
-        parsed: dict[str, object] = json.loads(out_b.decode(errors="replace"))
+            raise BrowseError(f"browse failed (rc={proc.returncode}): {err_b.decode(errors='replace')}")
+        try:
+            parsed: dict[str, object] = json.loads(out_b.decode(errors="replace"))
+        except json.JSONDecodeError as e:
+            raise BrowseError(f"browse emitted invalid JSON: {e}") from e
         return parsed
 
     async def capture(
@@ -79,6 +83,7 @@ class SubprocessBrowse:
             cmd += ["--screenshot", str(screenshot_to)]
         data = await self._run_json(cmd, timeout=timeout)
         raw_errors = data.get("console_errors") or []
+        # isinstance guard handles a truthy-but-non-list value (e.g. browse emits a string)
         errors = tuple(str(e) for e in raw_errors) if isinstance(raw_errors, list) else ()
         return PageState(
             url=url,
