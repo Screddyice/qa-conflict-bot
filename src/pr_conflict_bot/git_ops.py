@@ -194,6 +194,23 @@ async def has_conflict_markers(repo_dir: Path, file_path: str) -> bool:
     )
 
 
+_DIFF_LIMIT = 20000  # chars of diff sent to the reviewer LLM; bigger diffs get truncated
+
+
+async def pr_diff(repo_dir: Path, base_branch: str, *, limit: int = _DIFF_LIMIT) -> str:
+    """The PR's changes vs the base merge-base (all files), for code review.
+
+    `git diff --merge-base origin/<base> HEAD` — what this PR introduces. Truncated
+    to `limit` chars so a huge PR doesn't blow the LLM context (a partial review
+    beats none)."""
+    _, out, _ = await _run(
+        ["git", "diff", "--merge-base", f"origin/{base_branch}", "HEAD"], cwd=repo_dir
+    )
+    if len(out) > limit:
+        return out[:limit] + "\n\n... [diff truncated for review] ...\n"
+    return out
+
+
 async def has_changes(repo_dir: Path) -> bool:
     """True if the working tree has staged or unstaged changes (used to detect
     whether an LLM fix edited anything)."""

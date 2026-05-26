@@ -18,6 +18,7 @@ from pr_conflict_bot.qa.browse import FakeBrowse, PageState
 from pr_conflict_bot.qa.orchestrator import FixOutcome, QADeps, RunFixFn, process_qa_job
 from pr_conflict_bot.qa.url_resolver import URLResolutionError
 from pr_conflict_bot.server import PRJob
+from pr_conflict_bot.verify import VerifyResult
 
 
 class FakeGH:
@@ -65,6 +66,8 @@ def _deps(
     linear_calls: list[tuple[str, str, str]] | None = None,
     enabled_set: bool = True,
     run_fix: RunFixFn | None = None,
+    diff_text: str = "+ added a line\n",
+    verify_passed: bool = True,
 ) -> QADeps:
     @contextlib.asynccontextmanager
     async def fake_open_url(_repo: Path, _qa: QAConfig) -> AsyncIterator[str]:
@@ -72,6 +75,12 @@ def _deps(
 
     async def fake_complete(prompt: str, cfg: LLMConfig) -> str:
         return completion
+
+    async def fake_pr_diff(_repo: Path, _base: str) -> str:
+        return diff_text
+
+    async def fake_verify(_cfg: object, _repo: Path) -> VerifyResult:
+        return VerifyResult(passed=verify_passed, steps=())
 
     async def fake_clone(_job: PRJob, _cfg: Config, _gh: object) -> Path:
         return repo_dir
@@ -98,6 +107,8 @@ def _deps(
         cleanup=fake_cleanup,
         notify_linear=fake_notify_linear,
         run_fix=run_fix or _default_run_fix,  # type: ignore[arg-type]
+        pr_diff=fake_pr_diff,
+        run_verify=fake_verify,
     )
 
 
@@ -367,6 +378,80 @@ async def test_fix_mode_no_edits_only_report(tmp_path: Path) -> None:
     # Only the report comment — no fix-PR / verify-fail comment.
     assert len(gh.comments) == 1
     assert "bug" in gh.comments[0]
+
+
+# --- code-level QA (non-web repos) ------------------------------------------
+
+
+async def test_code_qa_findings_post_comment(tmp_path: Path) -> None:
+    # No package.json / index.html -> not a web app -> code QA reviews the diff.
+    gh = FakeGH()
+    deps = _deps(
+        tmp_path, qa=QAConfig(), browse=FakeBrowse(PageState("x", 200, (), "x", None)),
+        completion='[{"severity":"high","title":"null deref","detail":"foo.py"}]',
+        enabled_set=False,
+    )
+    await process_qa_job(_job(owner="o"), _cfg(default_orgs=frozenset({"o"})), gh, deps)
+    assert len(gh.comments) == 1
+    assert "code review" in gh.comments[0]
+    assert "null deref" in gh.comments[0]
+
+
+async def test_code_qa_clean_diff_is_silent(tmp_path: Path) -> None:
+    gh = FakeGH()
+    deps = _deps(
+        tmp_path, qa=QAConfig(), browse=FakeBrowse(PageState("x", 200, (), "x", None)),
+        completion="[]", enabled_set=False,
+    )
+    await process_qa_job(_job(owner="o"), _cfg(default_orgs=frozenset({"o"})), gh, deps)
+    # Clean code review must NOT comment (no org-wide per-PR noise).
+    assert gh.comments == []
+
+
+async def test_code_qa_empty_diff_is_silent(tmp_path: Path) -> None:
+    gh = FakeGH()
+    deps = _deps(
+        tmp_path, qa=QAConfig(), browse=FakeBrowse(PageState("x", 200, (), "x", None)),
+        completion='[{"severity":"high","title":"x","detail":"y"}]', enabled_set=False,
+        diff_text="   \n",  # nothing changed
+    )
+    await process_qa_job(_job(owner="o"), _cfg(default_orgs=frozenset({"o"})), gh, deps)
+    assert gh.comments == []
+
+
+async def test_code_qa_fix_mode_runs_fix(tmp_path: Path) -> None:
+    gh = FakeGH()
+    calls: list[str] = []
+
+    async def fake_run_fix(job, cfg, gh_, repo_dir, fix_prompt, findings):  # type: ignore[no-untyped-def]
+        calls.append(fix_prompt)
+        return FixOutcome(changed=True, verified=True, pr_url="https://github.com/o/r/pull/77", detail="")
+
+    deps = _deps(
+        tmp_path, qa=QAConfig(enabled=True, mode="fix"), browse=FakeBrowse(PageState("x", 200, (), "x", None)),
+        completion='[{"severity":"high","title":"bug","detail":"d"}]',
+        enabled_set=True, run_fix=fake_run_fix,
+    )
+    await process_qa_job(_job(owner="o"), _cfg(default_orgs=frozenset({"o"})), gh, deps)
+    assert len(calls) == 1  # fix ran with a (diff-based) prompt
+    assert any("opened a fix PR" in c and "pull/77" in c for c in gh.comments)
+
+
+async def test_code_qa_verify_failure_becomes_finding(tmp_path: Path) -> None:
+    # LLM finds nothing, but the repo's verify gate fails -> that's a finding.
+    gh = FakeGH()
+    deps = _deps(
+        tmp_path, qa=QAConfig(), browse=FakeBrowse(PageState("x", 200, (), "x", None)),
+        completion="[]", enabled_set=True, verify_passed=False,
+    )
+    # Give the repo a real verify gate via the override so the gate actually runs.
+    base = deps
+    deps = QADeps(**{**base.__dict__,
+                    "load_qa": lambda _r: RepoOverride(qa=QAConfig(enabled=True), qa_enabled_set=True,
+                                                       qa_mode_set=True, verify=VerifyConfig(test="pytest"))})
+    await process_qa_job(_job(owner="o"), _cfg(default_orgs=frozenset({"o"})), gh, deps)
+    assert len(gh.comments) == 1
+    assert "verify gate failing" in gh.comments[0]
 
 
 async def test_report_mode_does_not_run_fix(tmp_path: Path) -> None:

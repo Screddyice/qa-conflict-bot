@@ -52,6 +52,21 @@ def format_comment(
     return "\n".join(lines)
 
 
+def format_code_comment(*, findings: Sequence[Finding], score: float) -> str:
+    """PR comment for code-level QA (non-web repos). Posted only when there are
+    findings (org-wide code review stays quiet on clean PRs to avoid noise)."""
+    lines = [
+        "**pr-conflict-bot: QA** (code review)",
+        "",
+        f"Reviewed the PR diff — health **{score:.1f}/10**, **{len(findings)}** finding(s):",
+    ]
+    for f in findings:
+        lines.append(f"- **[{f.severity}]** {f.title} — {f.detail}")
+    lines.append("")
+    lines.append("_Report-only: no code was changed. Review and fix as needed._")
+    return "\n".join(lines)
+
+
 def format_linear_comment(
     *,
     pr_url: str,

@@ -64,7 +64,7 @@ async def test_default_run_fix_no_edits_no_pr(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(orch.llm, "apply_edit", fake_apply_edit)
     monkeypatch.setattr(orch.git_ops, "has_changes", fake_has_changes)
     gh = _GH()
-    out = await orch.default_run_fix(_job(), _cfg(), gh, Path("/tmp/x"), _STATE, _FINDINGS)  # type: ignore[arg-type]
+    out = await orch.default_run_fix(_job(), _cfg(), gh, Path("/tmp/x"), "fix prompt", _FINDINGS)  # type: ignore[arg-type]
     assert out.changed is False
     assert out.pr_url is None
     assert gh.created == []
@@ -86,7 +86,7 @@ async def test_default_run_fix_refuses_without_verify_gate(monkeypatch: pytest.M
         work_dir=Path("/tmp"), log_level="INFO",
     )
     gh = _GH()
-    out = await orch.default_run_fix(_job(), cfg, gh, Path("/tmp/x"), _STATE, _FINDINGS)  # type: ignore[arg-type]
+    out = await orch.default_run_fix(_job(), cfg, gh, Path("/tmp/x"), "fix prompt", _FINDINGS)  # type: ignore[arg-type]
     assert out.changed is False
     assert out.pr_url is None
     assert gh.created == []
@@ -109,7 +109,7 @@ async def test_default_run_fix_verify_fail_no_pr(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(orch.git_ops, "has_changes", fake_has_changes)
     monkeypatch.setattr(orch.verify, "run", fake_verify)
     gh = _GH()
-    out = await orch.default_run_fix(_job(), _cfg(), gh, Path("/tmp/x"), _STATE, _FINDINGS)  # type: ignore[arg-type]
+    out = await orch.default_run_fix(_job(), _cfg(), gh, Path("/tmp/x"), "fix prompt", _FINDINGS)  # type: ignore[arg-type]
     assert out.changed is True
     assert out.verified is False
     assert out.pr_url is None
@@ -148,7 +148,7 @@ async def test_default_run_fix_success_opens_pr(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(orch.git_ops, "push_new_branch", fake_push)
 
     gh = _GH()
-    out = await orch.default_run_fix(_job(), _cfg(), gh, Path("/tmp/x"), _STATE, _FINDINGS)  # type: ignore[arg-type]
+    out = await orch.default_run_fix(_job(), _cfg(), gh, Path("/tmp/x"), "fix prompt", _FINDINGS)  # type: ignore[arg-type]
     assert out.verified is True
     assert out.pr_url == "https://github.com/o/r/pull/123"
     assert gh.created[0]["base"] == "feat"  # fix PR targets the original PR branch

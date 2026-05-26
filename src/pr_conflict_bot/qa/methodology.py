@@ -51,6 +51,47 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 _VALID_SEVERITIES = {"critical", "high", "medium", "low"}
 
 
+_DIFF_REVIEW_TEMPLATE = """\
+You are a senior engineer reviewing a pull request's diff for real bugs a
+reviewer would block on. Be strict but do not invent issues or nitpick style.
+Focus on: correctness bugs, unhandled errors, security issues, data loss, race
+conditions, broken edge cases, and obviously wrong logic.
+
+PULL REQUEST DIFF:
+{diff}
+
+Respond with ONLY a JSON array of findings, each:
+  {{"severity": "critical"|"high"|"medium"|"low", "title": "...", "detail": "..."}}
+Cite the file/symbol in the detail. If the diff looks correct, respond with [].
+"""
+
+_CODE_FIX_TEMPLATE = """\
+You are a senior engineer fixing review findings on a pull request. The repo is
+in the current working directory, checked out at the PR's HEAD. A review found:
+
+{findings}
+
+For reference, the PR's diff:
+{diff}
+
+Edit the source files in this directory to fix these findings. Make the smallest
+change that genuinely resolves each one. Do NOT change unrelated code, do NOT
+edit tests to make them pass, and do NOT add comments narrating the fix. If a
+finding isn't actually fixable from the code, leave it.
+"""
+
+
+def build_diff_review_prompt(diff: str) -> str:
+    """Code-review prompt for non-web repos: judge the PR diff, return JSON findings."""
+    return _DIFF_REVIEW_TEMPLATE.format(diff=diff or "(empty diff)")
+
+
+def build_code_fix_prompt(diff: str, findings: list[Finding]) -> str:
+    """Editing prompt for fix mode on a code (non-web) QA pass."""
+    listed = "\n".join(f"- [{f.severity}] {f.title}: {f.detail}" for f in findings)
+    return _CODE_FIX_TEMPLATE.format(findings=listed, diff=diff[:8000] or "(empty diff)")
+
+
 def build_fix_prompt(state: PageState, findings: list[Finding]) -> str:
     """Editing prompt for fix mode: instruct the backend to edit the repo to
     address the findings. Engine-neutral (works for claude -p and codex exec)."""
