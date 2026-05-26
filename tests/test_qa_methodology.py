@@ -59,3 +59,18 @@ def test_build_smoke_prompt_no_console_errors_shows_none() -> None:
     from pr_conflict_bot.qa.browse import PageState
     state = PageState(url="http://a", http_status=200, console_errors=(), text="ok", screenshot_path=None)
     assert "(none)" in build_smoke_prompt(state)
+
+
+def test_build_diff_review_prompt_includes_diff_and_json() -> None:
+    from pr_conflict_bot.qa.methodology import build_diff_review_prompt
+    p = build_diff_review_prompt("--- a/foo.py\n+++ b/foo.py\n+bug()")
+    assert "foo.py" in p
+    assert "JSON array" in p
+
+
+def test_build_code_fix_prompt_lists_findings() -> None:
+    from pr_conflict_bot.qa.methodology import build_code_fix_prompt
+    from pr_conflict_bot.qa.report import Finding
+    p = build_code_fix_prompt("diff here", [Finding("high", "null deref", "foo.py:10")])
+    assert "null deref" in p
+    assert "Edit the source files" in p
