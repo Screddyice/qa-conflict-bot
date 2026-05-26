@@ -121,14 +121,31 @@ def _fix_pr_body(job: PRJob, findings: list[Finding]) -> str:
     return "\n".join(lines)
 
 
+def _has_verify_gate(v: object) -> bool:
+    """True if the verify config has at least one non-empty step. Fix mode refuses
+    to open a PR without one — an empty gate trivially 'passes' (every step skips),
+    which would mean shipping unverified AI edits. This is the load-bearing guard
+    for org-wide fix mode: PRs only get opened where there's a way to check them."""
+    from ..config import VerifyConfig
+    assert isinstance(v, VerifyConfig)
+    return bool(v.lint.strip() or v.typecheck.strip() or v.test.strip())
+
+
 async def default_run_fix(
     job: PRJob, cfg: Config, gh: _GH, repo_dir: Path, state: PageState, findings: list[Finding]
 ) -> FixOutcome:
-    """Real fix flow: LLM edits the clone → verify gate → new branch + fix PR.
+    """Real fix flow: verify-gate check → LLM edits the clone → verify gate → new
+    branch + fix PR.
 
-    Guards: no edits → no PR; verify fail → no PR; success → a PR (never merged).
-    RS21 never reaches here (resolve_qa forces report mode).
+    Guards: no verify gate → no PR (don't even edit); no edits → no PR; verify
+    fail → no PR; success → a PR (never merged). RS21 never reaches here
+    (resolve_qa forces report mode).
     """
+    if not _has_verify_gate(cfg.verify):
+        # No way to verify the fix → don't open an unverified PR. Stay quiet
+        # (changed=False) so org-wide auto repos without a gate just report.
+        return FixOutcome(changed=False, verified=False, pr_url=None, detail="no verify gate configured")
+
     await llm.apply_edit(methodology.build_fix_prompt(state, findings), cfg.llm, cwd=repo_dir)
     if not await git_ops.has_changes(repo_dir):
         return FixOutcome(changed=False, verified=False, pr_url=None, detail="model made no edits")
@@ -258,8 +275,11 @@ async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None
         # PR. mode is "report" for RS21 (resolve_qa forces it) so this is skipped
         # there. Best-effort: a fix failure never breaks the report path above.
         if qa.mode == "fix" and findings and state is not None:
+            # Use the repo's own [verify] gate when it set one, else env defaults —
+            # fix mode requires a real gate (default_run_fix enforces this).
+            fix_cfg = cfg if override.verify is None else replace(cfg, verify=override.verify)
             try:
-                outcome = await deps.run_fix(job, cfg, gh, repo_dir, state, findings)
+                outcome = await deps.run_fix(job, fix_cfg, gh, repo_dir, state, findings)
                 if outcome.pr_url:
                     await _comment(gh, job,
                         f"**pr-conflict-bot: QA** opened a fix PR for the "

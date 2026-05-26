@@ -70,6 +70,29 @@ async def test_default_run_fix_no_edits_no_pr(monkeypatch: pytest.MonkeyPatch) -
     assert gh.created == []
 
 
+async def test_default_run_fix_refuses_without_verify_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # cfg with an EMPTY verify gate — fix mode must not open a PR (empty gate
+    # trivially passes), and must not even spend an LLM edit.
+    edited: list[int] = []
+
+    async def fake_apply_edit(prompt, cfg, *, cwd, timeout=600.0):  # type: ignore[no-untyped-def]
+        edited.append(1)
+
+    monkeypatch.setattr(orch.llm, "apply_edit", fake_apply_edit)
+    cfg = Config(
+        github=GitHubAppConfig(app_id=1, private_key_pem="x", webhook_secret="s", bot_login="b[bot]"),
+        llm=LLMConfig(), verify=VerifyConfig(), identity=BotIdentity(),  # empty verify
+        listen_host="127.0.0.1", listen_port=8081, webhook_path="/hooks/github",
+        work_dir=Path("/tmp"), log_level="INFO",
+    )
+    gh = _GH()
+    out = await orch.default_run_fix(_job(), cfg, gh, Path("/tmp/x"), _STATE, _FINDINGS)  # type: ignore[arg-type]
+    assert out.changed is False
+    assert out.pr_url is None
+    assert gh.created == []
+    assert edited == []  # didn't even attempt the edit
+
+
 async def test_default_run_fix_verify_fail_no_pr(monkeypatch: pytest.MonkeyPatch) -> None:
     from pr_conflict_bot.verify import StepResult, VerifyResult
 
