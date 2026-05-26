@@ -190,6 +190,23 @@ serialized with a lock because the daemon has a single active tab. The bot runs
 sandbox. `tests/test_qa_browse_smoke.py` drives the real binary end-to-end (it
 skips when no `browse` is on `PATH`).
 
+### Posting QA findings to Linear
+
+When QA **finds issues**, it can mirror the report to the PR's Linear issue (in
+addition to the PR comment). This is opt-in per GitHub owner via a server-side
+`LINEAR_TOKENS` env var — a JSON map of owner → Linear API token:
+
+```bash
+LINEAR_TOKENS='{"your-org":"lin_api_xxx","your-other-org":"lin_api_yyy"}'
+```
+
+The bot resolves the Linear issue by looking up the PR's html URL via Linear's
+`attachmentsForURL` (Linear's GitHub integration attaches the PR to its issue),
+so it never creates tickets — it comments on the one that's already linked.
+Owners with no token, or PRs with no linked Linear issue, are skipped silently.
+A clean QA pass never posts to Linear. The whole step is best-effort: a Linear
+failure is logged and never breaks the PR comment or the QA flow.
+
 ## Recommended branch protection
 
 For each protected branch (typically `main`):

@@ -52,7 +52,14 @@ def _job() -> PRJob:
     )
 
 
-def _deps(repo_dir: Path, *, qa: QAConfig, browse: FakeBrowse, completion: str) -> QADeps:
+def _deps(
+    repo_dir: Path,
+    *,
+    qa: QAConfig,
+    browse: FakeBrowse,
+    completion: str,
+    linear_calls: list[tuple[str, str, str]] | None = None,
+) -> QADeps:
     @contextlib.asynccontextmanager
     async def fake_open_url(_repo: Path, _qa: QAConfig) -> AsyncIterator[str]:
         yield "http://app.test"
@@ -66,6 +73,11 @@ def _deps(repo_dir: Path, *, qa: QAConfig, browse: FakeBrowse, completion: str) 
     async def fake_cleanup(_repo: Path) -> None:
         return None
 
+    async def fake_notify_linear(owner: str, pr_url: str, body: str) -> bool:
+        if linear_calls is not None:
+            linear_calls.append((owner, pr_url, body))
+        return True
+
     return QADeps(
         load_qa=lambda _root: qa,
         clone=fake_clone,
@@ -73,6 +85,7 @@ def _deps(repo_dir: Path, *, qa: QAConfig, browse: FakeBrowse, completion: str) 
         browse=browse,
         complete=fake_complete,
         cleanup=fake_cleanup,
+        notify_linear=fake_notify_linear,
     )
 
 
@@ -91,21 +104,78 @@ async def test_disabled_repo_posts_no_comment(tmp_path: Path) -> None:
 async def test_clean_page_posts_no_issues_comment(tmp_path: Path) -> None:
     gh = FakeGH()
     browse = FakeBrowse(PageState("http://app.test", 200, (), "Welcome", None))
-    deps = _deps(tmp_path, qa=QAConfig(enabled=True, url="http://app.test", start="x"), browse=browse, completion="[]")
+    linear_calls: list[tuple[str, str, str]] = []
+    deps = _deps(
+        tmp_path,
+        qa=QAConfig(enabled=True, url="http://app.test", start="x"),
+        browse=browse,
+        completion="[]",
+        linear_calls=linear_calls,
+    )
     await process_qa_job(_job(), _cfg(), gh, deps)
     assert len(gh.comments) == 1
     assert "No issues found" in gh.comments[0]
     assert browse.captured_urls == ["http://app.test"]
+    # A clean page must NOT notify Linear — only findings do.
+    assert linear_calls == []
 
 
-async def test_findings_appear_in_comment(tmp_path: Path) -> None:
+async def test_findings_appear_in_comment_and_notify_linear(tmp_path: Path) -> None:
     gh = FakeGH()
     browse = FakeBrowse(PageState("http://app.test", 500, ("TypeError",), "Error", None))
     completion = '[{"severity":"high","title":"500","detail":"server error"}]'
-    deps = _deps(tmp_path, qa=QAConfig(enabled=True, url="http://app.test", start="x"), browse=browse, completion=completion)
+    linear_calls: list[tuple[str, str, str]] = []
+    deps = _deps(
+        tmp_path,
+        qa=QAConfig(enabled=True, url="http://app.test", start="x"),
+        browse=browse,
+        completion=completion,
+        linear_calls=linear_calls,
+    )
     await process_qa_job(_job(), _cfg(), gh, deps)
     assert "500" in gh.comments[0]
     assert "/10" in gh.comments[0]
+    # Findings are mirrored to Linear with the PR URL and finding content.
+    assert len(linear_calls) == 1
+    owner, pr_url, body = linear_calls[0]
+    assert owner == "o"
+    assert pr_url == "https://github.com/o/r/pull/7"
+    assert "500" in body
+
+
+async def test_linear_failure_does_not_break_qa(tmp_path: Path) -> None:
+    gh = FakeGH()
+    browse = FakeBrowse(PageState("http://app.test", 500, ("TypeError",), "Error", None))
+
+    @contextlib.asynccontextmanager
+    async def fake_open_url(_repo: Path, _qa: QAConfig) -> AsyncIterator[str]:
+        yield "http://app.test"
+
+    async def fake_complete(prompt: str, cfg: LLMConfig) -> str:
+        return '[{"severity":"high","title":"boom","detail":"d"}]'
+
+    async def fake_clone(_job: PRJob, _cfg: Config, _gh: object) -> Path:
+        return tmp_path
+
+    async def fake_cleanup(_repo: Path) -> None:
+        return None
+
+    async def exploding_notify(owner: str, pr_url: str, body: str) -> bool:
+        raise RuntimeError("linear down")
+
+    deps = QADeps(
+        load_qa=lambda _root: QAConfig(enabled=True, url="http://app.test", start="x"),
+        clone=fake_clone,
+        open_url=fake_open_url,
+        browse=browse,
+        complete=fake_complete,
+        cleanup=fake_cleanup,
+        notify_linear=exploding_notify,
+    )
+    # Must not raise — the PR comment still posts despite the Linear failure.
+    await process_qa_job(_job(), _cfg(), gh, deps)
+    assert len(gh.comments) == 1
+    assert "boom" in gh.comments[0]
 
 
 async def test_url_resolution_failure_posts_did_not_run(tmp_path: Path) -> None:

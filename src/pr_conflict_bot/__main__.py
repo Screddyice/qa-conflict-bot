@@ -44,7 +44,7 @@ async def _run(cfg: Config, num_workers: int = 2) -> None:
     gh = GitHubClient(cfg.github, session)
 
     browse_binary = os.environ.get("QA_BROWSE_BIN", "browse")
-    qa_deps = default_deps(cfg, browse_binary)
+    qa_deps = default_deps(cfg, browse_binary, session)
 
     workers = [
         asyncio.create_task(worker(queue, cfg, gh), name=f"worker-{i}")

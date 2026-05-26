@@ -50,3 +50,27 @@ def format_comment(
     lines.append("")
     lines.append("_Report-only: no code was changed. Review and fix as needed._")
     return "\n".join(lines)
+
+
+def format_linear_comment(
+    *,
+    pr_url: str,
+    url: str,
+    findings: Sequence[Finding],
+    score: float,
+) -> str:
+    """Comment body for the PR's Linear issue. Posted only when QA found issues,
+    so unlike `format_comment` there is no clean/no-findings branch. Links back
+    to the PR since the Linear reader isn't looking at the diff."""
+    lines = [
+        f"**pr-conflict-bot: QA** flagged {len(findings)} issue(s) on this PR.",
+        f"PR: {pr_url}",
+        f"Tested `{url}` — health **{score:.1f}/10**.",
+        "",
+        "**Findings:**",
+    ]
+    for f in findings:
+        lines.append(f"- **[{f.severity}]** {f.title} — {f.detail}")
+    lines.append("")
+    lines.append("_Report-only: no code was changed. Review on the PR._")
+    return "\n".join(lines)

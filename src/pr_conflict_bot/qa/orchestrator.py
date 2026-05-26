@@ -15,10 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+import aiohttp
 import structlog
 
 from .. import git_ops, llm
 from ..config import Config, LLMConfig, QAConfig, load_repo_override
+from ..linear import LinearClient
 from ..server import PRJob
 from . import methodology, report
 from .browse import BrowseEngine, SubprocessBrowse
@@ -39,6 +41,13 @@ OpenURLFn = Callable[[Path, QAConfig], AbstractAsyncContextManager[str]]
 CloneFn = Callable[[PRJob, Config, _GH], Awaitable[Path]]
 LoadQAFn = Callable[[Path], QAConfig]
 CleanupFn = Callable[[Path], Awaitable[None]]
+# (owner, pr_url, body) -> True if a Linear comment was posted, False if skipped
+# (no token for the owner, or no Linear issue linked to the PR).
+NotifyLinearFn = Callable[[str, str, str], Awaitable[bool]]
+
+
+async def _noop_notify_linear(owner: str, pr_url: str, body: str) -> bool:
+    return False
 
 
 @dataclass(frozen=True)
@@ -49,6 +58,7 @@ class QADeps:
     browse: BrowseEngine
     complete: CompleteFn
     cleanup: CleanupFn
+    notify_linear: NotifyLinearFn = _noop_notify_linear
 
 
 async def _default_clone(job: PRJob, cfg: Config, gh: _GH) -> Path:
@@ -63,7 +73,18 @@ async def _default_clone(job: PRJob, cfg: Config, gh: _GH) -> Path:
     return await git_ops.clone_pr(spec, git_name=cfg.identity.git_name, git_email=cfg.identity.git_email)
 
 
-def default_deps(cfg: Config, browse_binary: str) -> QADeps:
+def default_deps(cfg: Config, browse_binary: str, session: aiohttp.ClientSession) -> QADeps:
+    async def _notify_linear(owner: str, pr_url: str, body: str) -> bool:
+        token = cfg.linear_tokens.get(owner.lower())
+        if not token:
+            return False  # this owner has no Linear configured — skip silently
+        client = LinearClient(token, session)
+        issue_id = await client.find_issue_id_by_url(pr_url)
+        if issue_id is None:
+            return False  # no Linear issue linked to this PR (yet)
+        await client.comment(issue_id, body)
+        return True
+
     return QADeps(
         load_qa=lambda root: load_repo_override(root).qa,
         clone=_default_clone,
@@ -71,6 +92,7 @@ def default_deps(cfg: Config, browse_binary: str) -> QADeps:
         browse=SubprocessBrowse(browse_binary, cwd=cfg.work_dir),
         complete=llm.complete,
         cleanup=git_ops.cleanup,
+        notify_linear=_notify_linear,
     )
 
 
@@ -105,6 +127,21 @@ async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None
 
         comment = report.format_comment(url=url or "", findings=findings, score=score, failure=failure)
         await gh.post_issue_comment(job.installation_id, job.owner, job.repo, job.pr_number, comment)
+
+        # When QA actually found issues, mirror them to the PR's Linear ticket.
+        # Best-effort: a Linear failure (no token, no linked issue, API error)
+        # must never break the QA flow — the PR comment is the source of truth.
+        if findings:
+            pr_url = f"https://github.com/{job.owner}/{job.repo}/pull/{job.pr_number}"
+            linear_body = report.format_linear_comment(
+                pr_url=pr_url, url=url or "", findings=findings, score=score
+            )
+            try:
+                posted = await deps.notify_linear(job.owner, pr_url, linear_body)
+                L.info("qa linear notify", posted=posted)
+            except Exception:
+                L.warning("qa linear notify failed", exc_info=True)
+
         L.info("qa done", findings=len(findings), score=score, failure=failure)
     except Exception as e:  # report, never crash the worker
         L.exception("qa job failed")

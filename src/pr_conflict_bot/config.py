@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -105,6 +106,12 @@ class Config:
     lower-case at load time). Empty set means "no user filter" — all PRs
     pass this gate. Useful when the App is installed org-wide but should
     only act on a specific operator's PRs."""
+    linear_tokens: dict[str, str] = field(default_factory=dict)
+    """Map of GitHub owner (lower-cased) -> Linear API token, parsed from the
+    `LINEAR_TOKENS` env var (JSON object). When QA finds issues on a PR whose
+    owner has a token here, it also posts the findings to that PR's Linear issue.
+    Owners absent from the map (e.g. repos with no Linear) are silently skipped.
+    Kept out of the repo TOML on purpose — these are secrets, server-side only."""
 
 
 def _required(key: str) -> str:
@@ -112,6 +119,20 @@ def _required(key: str) -> str:
     if not val:
         raise ConfigError(f"Required environment variable {key} is not set")
     return val
+
+
+def _parse_linear_tokens(raw: str) -> dict[str, str]:
+    """Parse the LINEAR_TOKENS env (JSON owner->token). Returns {} on empty or
+    malformed input — a bad value disables Linear posting, never crashes boot."""
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k).lower(): str(v) for k, v in data.items() if v}
 
 
 def _read_private_key(path_or_inline: str) -> str:
@@ -173,6 +194,7 @@ def load_from_env() -> Config:
             for u in os.environ.get("ALLOW_USERS", "").split(",")
             if u.strip()
         ),
+        linear_tokens=_parse_linear_tokens(os.environ.get("LINEAR_TOKENS", "")),
     )
 
 
