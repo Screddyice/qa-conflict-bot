@@ -224,10 +224,14 @@ For repos in those orgs, QA is enabled without a TOML. Precedence:
 Because there's no per-repo `[qa] start`, the bot **auto-detects** how to build
 and serve each app from the clone (Next.js, Vite, react-scripts, a generic
 `dev`/`start` script, or a static `index.html`; package manager from the
-lockfile). When it can't detect a servable app — or the app won't come up — an
-**org-default repo is skipped silently** (no comment), so QA never spams PRs in
-non-web repos. A repo that explicitly opted in still gets a "did not run"
-comment so the owner knows to fix its config.
+lockfile).
+
+**Web repos** get the browser pass (load the page, check for errors). **Non-web
+repos** (backends, CLIs, libraries — no servable app) get **code-level QA
+instead**: the LLM reviews the PR diff for bugs and the repo's verify gate runs
+(a gate failure is itself a finding). Code QA stays **silent on a clean diff**
+(no per-PR noise org-wide) and only comments when it finds something. In fix
+mode it opens a fix PR the same way the browser pass does.
 
 **RS21 repos** (owner or name containing `rs21`) are hard-excluded from QA
 regardless of any config.
