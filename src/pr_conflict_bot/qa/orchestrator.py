@@ -11,7 +11,7 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -19,11 +19,13 @@ import aiohttp
 import structlog
 
 from .. import git_ops, llm
-from ..config import Config, LLMConfig, QAConfig, load_repo_override
+from ..config import Config, LLMConfig, QAConfig, RepoOverride, load_repo_override
 from ..linear import LinearClient
+from ..qa_policy import resolve_qa
 from ..server import PRJob
 from . import methodology, report
 from .browse import BrowseEngine, SubprocessBrowse
+from .detect import detect_serve
 from .url_resolver import URLResolutionError, serve_via_start_command
 
 log = structlog.get_logger()
@@ -39,7 +41,7 @@ class _GH(Protocol):
 CompleteFn = Callable[[str, LLMConfig], Awaitable[str]]
 OpenURLFn = Callable[[Path, QAConfig], AbstractAsyncContextManager[str]]
 CloneFn = Callable[[PRJob, Config, _GH], Awaitable[Path]]
-LoadQAFn = Callable[[Path], QAConfig]
+LoadQAFn = Callable[[Path], RepoOverride]
 CleanupFn = Callable[[Path], Awaitable[None]]
 # (owner, pr_url, body) -> True if a Linear comment was posted, False if skipped
 # (no token for the owner, or no Linear issue linked to the PR).
@@ -86,7 +88,7 @@ def default_deps(cfg: Config, browse_binary: str, session: aiohttp.ClientSession
         return True
 
     return QADeps(
-        load_qa=lambda root: load_repo_override(root).qa,
+        load_qa=lambda root: load_repo_override(root),
         clone=_default_clone,
         open_url=serve_via_start_command,
         browse=SubprocessBrowse(browse_binary, cwd=cfg.work_dir),
@@ -96,23 +98,47 @@ def default_deps(cfg: Config, browse_binary: str, session: aiohttp.ClientSession
     )
 
 
+async def _comment(gh: _GH, job: PRJob, body: str) -> None:
+    await gh.post_issue_comment(job.installation_id, job.owner, job.repo, job.pr_number, body)
+
+
 async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None:
     L = log.bind(delivery=job.delivery_id, owner=job.owner, repo=job.repo, pr=job.pr_number, flow="qa")
     repo_dir: Path | None = None
-    failure: str | None = None
-    url: str | None = None
-    findings: list[report.Finding] = []
-    score = 10.0
+    # "explicit" = the repo asked for QA itself (set [qa] enabled, or gave a start
+    # command). Explicit repos get failure comments; org-default ("auto") repos
+    # skip silently on failure so we don't spam every PR across the org.
+    explicit = False
 
     try:
-        # We clone before the enabled check because [qa] lives in the repo's
+        # Clone before the enabled check because [qa] lives in the repo's
         # .pr-conflict-bot.toml — same clone-then-check pattern as the conflict flow.
         repo_dir = await deps.clone(job, cfg, gh)
-        qa = deps.load_qa(repo_dir)
+        override = deps.load_qa(repo_dir)
+        qa = resolve_qa(override, cfg, job.owner, job.repo)  # org default + RS21 block
         if not qa.enabled:
-            L.info("qa disabled by repo config")
+            L.info("qa disabled (repo opt-out, not in default orgs, or RS21)")
             return
+        explicit = override.qa_enabled_set or bool(override.qa.start)
 
+        # Resolve how to serve the app: repo-provided [qa] start, else auto-detect.
+        if not qa.start:
+            spec = detect_serve(repo_dir)
+            if spec is None:
+                if explicit:
+                    await _comment(gh, job, report.format_comment(
+                        url="", findings=[], score=0.0,
+                        failure="couldn't detect how to build/serve this app — "
+                                "set `[qa] start`/`url` in .pr-conflict-bot.toml",
+                    ))
+                else:
+                    L.info("qa auto: no servable app detected, skipping silently")
+                return
+            qa = replace(qa, start=spec.start, url=spec.url, build=spec.build)
+
+        url: str | None = None
+        findings: list[report.Finding] = []
+        score = 10.0
         try:
             async with deps.open_url(repo_dir, qa) as live_url:
                 url = live_url
@@ -122,15 +148,22 @@ async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None
                 findings = methodology.parse_findings(raw)
                 score = report.health_score(findings)
         except URLResolutionError as e:
-            failure = f"could not get a live URL to test: {e}"
-            L.warning("qa url resolution failed", reason=str(e))
+            if not explicit:
+                L.info("qa auto: app would not serve, skipping silently", reason=str(e))
+                return
+            await _comment(gh, job, report.format_comment(
+                url="", findings=[], score=0.0,
+                failure=f"could not get a live URL to test: {e}",
+            ))
+            return
 
-        comment = report.format_comment(url=url or "", findings=findings, score=score, failure=failure)
-        await gh.post_issue_comment(job.installation_id, job.owner, job.repo, job.pr_number, comment)
+        # Successful run — always post the report (this is the value for auto repos).
+        await _comment(gh, job, report.format_comment(
+            url=url or "", findings=findings, score=score, failure=None,
+        ))
 
-        # When QA actually found issues, mirror them to the PR's Linear ticket.
-        # Best-effort: a Linear failure (no token, no linked issue, API error)
-        # must never break the QA flow — the PR comment is the source of truth.
+        # When QA found issues, mirror them to the PR's Linear ticket. Best-effort:
+        # a Linear failure must never break the QA flow — the PR comment is truth.
         if findings:
             pr_url = f"https://github.com/{job.owner}/{job.repo}/pull/{job.pr_number}"
             linear_body = report.format_linear_comment(
@@ -142,14 +175,15 @@ async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None
             except Exception:
                 L.warning("qa linear notify failed", exc_info=True)
 
-        L.info("qa done", findings=len(findings), score=score, failure=failure)
-    except Exception as e:  # report, never crash the worker
+        L.info("qa done", findings=len(findings), score=score)
+    except Exception as e:  # never crash the worker
         L.exception("qa job failed")
-        with contextlib.suppress(Exception):
-            await gh.post_issue_comment(
-                job.installation_id, job.owner, job.repo, job.pr_number,
-                report.format_comment(url="", findings=[], score=0.0, failure=f"unexpected error: {e}"),
-            )
+        # Only surface unexpected errors to repos that opted in — auto repos stay quiet.
+        if explicit:
+            with contextlib.suppress(Exception):
+                await _comment(gh, job, report.format_comment(
+                    url="", findings=[], score=0.0, failure=f"unexpected error: {e}",
+                ))
     finally:
         if repo_dir is not None:
             with contextlib.suppress(Exception):
