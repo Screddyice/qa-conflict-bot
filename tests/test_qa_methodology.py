@@ -33,3 +33,29 @@ def test_parse_findings_tolerates_fenced_and_surrounding_text() -> None:
 def test_parse_findings_empty_or_garbage_returns_empty() -> None:
     assert parse_findings("no findings") == []
     assert parse_findings("[]") == []
+
+
+def test_parse_findings_ignores_trailing_prose_with_brackets() -> None:
+    raw = '[{"severity":"high","title":"t","detail":"d"}]\n\nNote [see issue 1].'
+    assert parse_findings(raw) == [Finding("high", "t", "d")]
+
+
+def test_parse_findings_missing_severity_defaults_to_medium() -> None:
+    assert parse_findings('[{"title":"t","detail":"d"}]') == [Finding("medium", "t", "d")]
+
+
+def test_parse_findings_null_fields_become_empty_strings() -> None:
+    assert parse_findings('[{"severity":null,"title":null,"detail":null}]') == [
+        Finding("medium", "", "")
+    ]
+
+
+def test_parse_findings_skips_non_dict_items() -> None:
+    raw = '[1, "x", {"severity":"low","title":"t","detail":"d"}]'
+    assert parse_findings(raw) == [Finding("low", "t", "d")]
+
+
+def test_build_smoke_prompt_no_console_errors_shows_none() -> None:
+    from pr_conflict_bot.qa.browse import PageState
+    state = PageState(url="http://a", http_status=200, console_errors=(), text="ok", screenshot_path=None)
+    assert "(none)" in build_smoke_prompt(state)

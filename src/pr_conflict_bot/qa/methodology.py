@@ -32,8 +32,26 @@ fine, respond with [].
 """
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-_ARRAY_RE = re.compile(r"\[.*\]", re.DOTALL)
 _VALID_SEVERITIES = {"critical", "high", "medium", "low"}
+
+
+def _extract_array_text(raw: str) -> str | None:
+    """Return the JSON-array substring from model output, or None.
+
+    Prefers a fenced ```json block; otherwise scans from the first '[' with a
+    JSON decoder so trailing prose (even prose containing brackets) is ignored.
+    """
+    fence = _FENCE_RE.search(raw)
+    if fence:
+        return fence.group(1)
+    start = raw.find("[")
+    if start == -1:
+        return None
+    try:
+        _obj, end = json.JSONDecoder().raw_decode(raw[start:])
+    except ValueError:
+        return None
+    return raw[start : start + end]
 
 
 def build_smoke_prompt(state: PageState) -> str:
@@ -46,15 +64,11 @@ def build_smoke_prompt(state: PageState) -> str:
 
 def parse_findings(raw: str) -> list[Finding]:
     """Extract a findings list from model output. Tolerates fences/surrounding
-    prose. Returns [] on anything unparseable — never raises."""
-    candidate = raw
-    fence = _FENCE_RE.search(raw)
-    if fence:
-        candidate = fence.group(1)
-    else:
-        arr = _ARRAY_RE.search(raw)
-        if arr:
-            candidate = arr.group(0)
+    prose (incl. trailing prose containing brackets). Returns [] on anything
+    unparseable — never raises."""
+    candidate = _extract_array_text(raw)
+    if candidate is None:
+        return []
     try:
         data = json.loads(candidate)
     except (json.JSONDecodeError, ValueError):
@@ -65,10 +79,14 @@ def parse_findings(raw: str) -> list[Finding]:
     for item in data:
         if not isinstance(item, dict):
             continue
-        sev = str(item.get("severity", "")).lower()
+        sev = str(item.get("severity") or "").lower()
         if sev not in _VALID_SEVERITIES:
             sev = "medium"
         findings.append(
-            Finding(severity=sev, title=str(item.get("title", "")), detail=str(item.get("detail", "")))
+            Finding(
+                severity=sev,
+                title=str(item.get("title") or ""),
+                detail=str(item.get("detail") or ""),
+            )
         )
     return findings
