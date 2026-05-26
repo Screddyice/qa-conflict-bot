@@ -24,3 +24,15 @@ skip_paths = [
 
 # Refuse to attempt resolution when conflict count exceeds this.
 max_files_per_pr = 50
+
+# Report-only QA pass (opt-in). Builds + serves this repo's PR checkout,
+# captures the running page with a headless browser, asks the LLM backend for
+# findings, and posts a QA report comment. Never edits code in this milestone.
+[qa]
+enabled = true
+mode = "report"
+tier = "standard"
+lens = ["functional"]
+url = "http://localhost:3000"
+start = "npm run dev"
+build = "npm run build"

@@ -1,0 +1,5 @@
+pr-conflict-bot bundles the `browse` headless-browser engine from gstack
+(https://github.com/garrytan/gstack), used under the MIT License.
+
+Copyright (c) 2026 Garry Tan
+See vendor/browse/LICENSE-gstack for the full license text.

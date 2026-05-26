@@ -144,6 +144,50 @@ skip_paths = ["package-lock.json", "**/migrations/*"]
 max_files_per_pr = 50
 ```
 
+## QA mode (report-only)
+
+QA mode is a second, independent job flow that runs alongside conflict
+resolution. On a PR in a repo that opts in, it builds and serves the PR
+checkout, captures the running page with a headless browser, asks the
+configured LLM backend for a findings judgment, and posts a QA report
+comment. **In this milestone (M1) it is report-only — it never edits code.**
+
+It is **opt-in per repo**: nothing runs until a repo adds `[qa] enabled = true`
+to its `.pr-conflict-bot.toml`.
+
+```toml
+[qa]
+enabled = true
+mode    = "report"          # "report" only in M1 ("fix" is reserved for later)
+tier    = "standard"        # "quick" | "standard" | "exhaustive"
+lens    = ["functional"]    # review lenses to apply
+url     = "http://localhost:3000"   # where the started app will respond
+start   = "npm run dev"     # command that serves the app (run in the checkout)
+build   = "npm run build"   # optional pre-start build command
+```
+
+`start`/`build` come from the repo's own override file — the same
+owner-controlled trust model as the `[verify]` commands — and are run in the
+PR checkout. QA waits for `url` to respond, captures it, judges it, comments,
+then tears the server (and its child process group) down.
+
+**Host dependencies.** The browser engine is gstack's `browse` (vendored under
+`vendor/browse/`, MIT — see `NOTICE`), which needs **Bun** and a **headless
+Chromium** on the host. Point the bot at the built binary with `QA_BROWSE_BIN`
+(default: `browse` on `PATH`):
+
+```bash
+QA_BROWSE_BIN=/usr/local/bin/browse
+```
+
+> **Integration note (M1):** the `SubprocessBrowse` adapter in
+> `qa/browse.py` assumes a one-shot `browse snapshot <url> --json` contract
+> (`{http_status, console_errors, text}`). The vendored gstack CLI is
+> session/daemon-based and its `snapshot` emits an accessibility tree, so the
+> adapter must be reconciled against the real CLI before QA capture works
+> end-to-end. `tests/test_qa_browse_smoke.py` is the guard: it skips when no
+> `browse` is on `PATH` and is where that reconciliation gets verified.
+
 ## Recommended branch protection
 
 For each protected branch (typically `main`):
@@ -191,7 +235,8 @@ For each protected branch (typically `main`):
 | `llm.py` | Subprocess wrappers for `claude -p` and `codex exec` (selected via `LLM_BACKEND`) |
 | `verify.py` | Lint / typecheck / test runner |
 | `github_api.py` | App auth (JWT → installation token), comments, dismiss reviews |
-| `config.py` | Env-driven config + per-repo TOML overrides |
+| `config.py` | Env-driven config + per-repo TOML overrides (incl. `[qa]`) |
+| `qa/` | Report-only QA flow: `orchestrator` (clone→serve→capture→judge→comment), `url_resolver`, `browse` engine seam, `methodology` prompts, `report` formatting. Independent worker pool; conflict flow untouched. |
 
 ## Failure modes
 
