@@ -18,14 +18,15 @@ from typing import Protocol
 import aiohttp
 import structlog
 
-from .. import git_ops, llm
+from .. import git_ops, llm, verify
 from ..config import Config, LLMConfig, QAConfig, RepoOverride, load_repo_override
 from ..linear import LinearClient
 from ..qa_policy import resolve_qa
 from ..server import PRJob
 from . import methodology, report
-from .browse import BrowseEngine, SubprocessBrowse
+from .browse import BrowseEngine, PageState, SubprocessBrowse
 from .detect import detect_serve
+from .report import Finding
 from .url_resolver import URLResolutionError, serve_via_start_command
 
 log = structlog.get_logger()
@@ -36,6 +37,10 @@ class _GH(Protocol):
     async def post_issue_comment(
         self, installation_id: int, owner: str, repo: str, pr_number: int, body: str
     ) -> None: ...
+    async def create_pull_request(
+        self, installation_id: int, owner: str, repo: str,
+        *, head: str, base: str, title: str, body: str,
+    ) -> str: ...
 
 
 CompleteFn = Callable[[str, LLMConfig], Awaitable[str]]
@@ -48,8 +53,32 @@ CleanupFn = Callable[[Path], Awaitable[None]]
 NotifyLinearFn = Callable[[str, str, str], Awaitable[bool]]
 
 
+@dataclass(frozen=True)
+class FixOutcome:
+    """Result of a fix-mode attempt. `changed` = the LLM edited something;
+    `verified` = the verify gate passed (only meaningful if changed); `pr_url` =
+    the opened fix PR (only when changed and verified); `detail` = a short note
+    (e.g. the verify summary) for the explanatory PR comment."""
+    changed: bool
+    verified: bool
+    pr_url: str | None
+    detail: str
+
+
+# (job, cfg, gh, repo_dir, page_state, findings) -> FixOutcome
+RunFixFn = Callable[
+    ["PRJob", "Config", "_GH", Path, PageState, list[Finding]], Awaitable[FixOutcome]
+]
+
+
 async def _noop_notify_linear(owner: str, pr_url: str, body: str) -> bool:
     return False
+
+
+async def _noop_run_fix(
+    job: PRJob, cfg: Config, gh: _GH, repo_dir: Path, state: PageState, findings: list[Finding]
+) -> FixOutcome:
+    return FixOutcome(changed=False, verified=False, pr_url=None, detail="")
 
 
 @dataclass(frozen=True)
@@ -61,6 +90,7 @@ class QADeps:
     complete: CompleteFn
     cleanup: CleanupFn
     notify_linear: NotifyLinearFn = _noop_notify_linear
+    run_fix: RunFixFn = _noop_run_fix
 
 
 async def _default_clone(job: PRJob, cfg: Config, gh: _GH) -> Path:
@@ -73,6 +103,53 @@ async def _default_clone(job: PRJob, cfg: Config, gh: _GH) -> Path:
         work_dir=cfg.work_dir,
     )
     return await git_ops.clone_pr(spec, git_name=cfg.identity.git_name, git_email=cfg.identity.git_email)
+
+
+def _fix_pr_body(job: PRJob, findings: list[Finding]) -> str:
+    lines = [
+        f"Automated QA fix for #{job.pr_number}.",
+        "",
+        "Addresses the findings QA reported on that PR:",
+    ]
+    for f in findings:
+        lines.append(f"- **[{f.severity}]** {f.title} — {f.detail}")
+    lines += [
+        "",
+        "_Opened by QA fix mode. The verify gate passed before this PR was created. "
+        "Review before merge — nothing auto-merges._",
+    ]
+    return "\n".join(lines)
+
+
+async def default_run_fix(
+    job: PRJob, cfg: Config, gh: _GH, repo_dir: Path, state: PageState, findings: list[Finding]
+) -> FixOutcome:
+    """Real fix flow: LLM edits the clone → verify gate → new branch + fix PR.
+
+    Guards: no edits → no PR; verify fail → no PR; success → a PR (never merged).
+    RS21 never reaches here (resolve_qa forces report mode).
+    """
+    await llm.apply_edit(methodology.build_fix_prompt(state, findings), cfg.llm, cwd=repo_dir)
+    if not await git_ops.has_changes(repo_dir):
+        return FixOutcome(changed=False, verified=False, pr_url=None, detail="model made no edits")
+
+    vr = await verify.run(cfg.verify, repo_dir)
+    if not vr.passed:
+        return FixOutcome(changed=True, verified=False, pr_url=None, detail=vr.summary())
+
+    branch = f"qa-fix/{job.pr_branch}-{job.pr_head_sha[:8]}"
+    await git_ops.create_branch(repo_dir, branch)
+    await git_ops.stage_and_commit_resolution(
+        repo_dir, f"fix(qa): address {len(findings)} QA finding(s) on #{job.pr_number}"
+    )
+    await git_ops.push_new_branch(repo_dir, branch)
+    pr_url = await gh.create_pull_request(
+        job.installation_id, job.owner, job.repo,
+        head=branch, base=job.pr_branch,
+        title=f"QA fix for #{job.pr_number}: {len(findings)} finding(s)",
+        body=_fix_pr_body(job, findings),
+    )
+    return FixOutcome(changed=True, verified=True, pr_url=pr_url, detail="")
 
 
 def default_deps(cfg: Config, browse_binary: str, session: aiohttp.ClientSession) -> QADeps:
@@ -95,6 +172,7 @@ def default_deps(cfg: Config, browse_binary: str, session: aiohttp.ClientSession
         complete=llm.complete,
         cleanup=git_ops.cleanup,
         notify_linear=_notify_linear,
+        run_fix=default_run_fix,
     )
 
 
@@ -137,6 +215,7 @@ async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None
             qa = replace(qa, start=spec.start, url=spec.url, build=spec.build)
 
         url: str | None = None
+        state: PageState | None = None
         findings: list[report.Finding] = []
         score = 10.0
         try:
@@ -174,6 +253,26 @@ async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None
                 L.info("qa linear notify", posted=posted)
             except Exception:
                 L.warning("qa linear notify failed", exc_info=True)
+
+        # Fix mode: on findings, let the backend fix them, verify, and open a fix
+        # PR. mode is "report" for RS21 (resolve_qa forces it) so this is skipped
+        # there. Best-effort: a fix failure never breaks the report path above.
+        if qa.mode == "fix" and findings and state is not None:
+            try:
+                outcome = await deps.run_fix(job, cfg, gh, repo_dir, state, findings)
+                if outcome.pr_url:
+                    await _comment(gh, job,
+                        f"**pr-conflict-bot: QA** opened a fix PR for the "
+                        f"{len(findings)} finding(s) above: {outcome.pr_url}\n\n"
+                        "_Verify gate passed. Review before merge — nothing auto-merges._")
+                elif outcome.changed and not outcome.verified:
+                    await _comment(gh, job,
+                        "**pr-conflict-bot: QA** attempted a fix but the verify gate "
+                        f"failed — no PR opened.\n\n```\n{outcome.detail}\n```")
+                L.info("qa fix done", changed=outcome.changed,
+                       verified=outcome.verified, pr=outcome.pr_url)
+            except Exception:
+                L.warning("qa fix flow failed", exc_info=True)
 
         L.info("qa done", findings=len(findings), score=score)
     except Exception as e:  # never crash the worker

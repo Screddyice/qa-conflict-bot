@@ -15,7 +15,7 @@ from pr_conflict_bot.config import (
     VerifyConfig,
 )
 from pr_conflict_bot.qa.browse import FakeBrowse, PageState
-from pr_conflict_bot.qa.orchestrator import QADeps, process_qa_job
+from pr_conflict_bot.qa.orchestrator import FixOutcome, QADeps, RunFixFn, process_qa_job
 from pr_conflict_bot.qa.url_resolver import URLResolutionError
 from pr_conflict_bot.server import PRJob
 
@@ -64,6 +64,7 @@ def _deps(
     completion: str,
     linear_calls: list[tuple[str, str, str]] | None = None,
     enabled_set: bool = True,
+    run_fix: RunFixFn | None = None,
 ) -> QADeps:
     @contextlib.asynccontextmanager
     async def fake_open_url(_repo: Path, _qa: QAConfig) -> AsyncIterator[str]:
@@ -83,14 +84,20 @@ def _deps(
             linear_calls.append((owner, pr_url, body))
         return True
 
+    async def _default_run_fix(
+        job: PRJob, cfg: object, gh: object, repo_dir: Path, state: object, findings: list[object]
+    ) -> FixOutcome:
+        return FixOutcome(changed=False, verified=False, pr_url=None, detail="")
+
     return QADeps(
-        load_qa=lambda _root: RepoOverride(qa=qa, qa_enabled_set=enabled_set),
+        load_qa=lambda _root: RepoOverride(qa=qa, qa_enabled_set=enabled_set, qa_mode_set=enabled_set),
         clone=fake_clone,
         open_url=fake_open_url,
         browse=browse,
         complete=fake_complete,
         cleanup=fake_cleanup,
         notify_linear=fake_notify_linear,
+        run_fix=run_fix or _default_run_fix,  # type: ignore[arg-type]
     )
 
 
@@ -303,3 +310,76 @@ async def test_owner_not_in_default_orgs_skips(tmp_path: Path) -> None:
     )
     await process_qa_job(_job(owner="screddyice"), _cfg(default_orgs=frozenset({"teamnebula-ai"})), gh, deps)
     assert gh.comments == []
+
+
+# --- fix mode ---------------------------------------------------------------
+
+_FINDING = '[{"severity":"high","title":"bug","detail":"d"}]'
+
+
+def _findings_browse() -> FakeBrowse:
+    return FakeBrowse(PageState("http://app.test", 500, ("E",), "err", None))
+
+
+async def test_fix_mode_opens_pr_and_comments(tmp_path: Path) -> None:
+    gh = FakeGH()
+    calls: list[int] = []
+
+    async def fake_run_fix(job, cfg, gh_, repo_dir, state, findings):  # type: ignore[no-untyped-def]
+        calls.append(len(findings))
+        return FixOutcome(changed=True, verified=True, pr_url="https://github.com/o/r/pull/99", detail="")
+
+    deps = _deps(
+        tmp_path, qa=QAConfig(enabled=True, mode="fix", url="http://app.test", start="x"),
+        browse=_findings_browse(), completion=_FINDING, run_fix=fake_run_fix,
+    )
+    await process_qa_job(_job(), _cfg(), gh, deps)
+    assert calls == [1]
+    assert any("opened a fix PR" in c and "pull/99" in c for c in gh.comments)
+
+
+async def test_fix_mode_verify_fail_no_pr(tmp_path: Path) -> None:
+    gh = FakeGH()
+
+    async def fake_run_fix(job, cfg, gh_, repo_dir, state, findings):  # type: ignore[no-untyped-def]
+        return FixOutcome(changed=True, verified=False, pr_url=None, detail="[FAIL] test")
+
+    deps = _deps(
+        tmp_path, qa=QAConfig(enabled=True, mode="fix", url="http://app.test", start="x"),
+        browse=_findings_browse(), completion=_FINDING, run_fix=fake_run_fix,
+    )
+    await process_qa_job(_job(), _cfg(), gh, deps)
+    assert any("verify gate" in c for c in gh.comments)
+    assert not any("pull/" in c for c in gh.comments)
+
+
+async def test_fix_mode_no_edits_only_report(tmp_path: Path) -> None:
+    gh = FakeGH()
+
+    async def fake_run_fix(job, cfg, gh_, repo_dir, state, findings):  # type: ignore[no-untyped-def]
+        return FixOutcome(changed=False, verified=False, pr_url=None, detail="")
+
+    deps = _deps(
+        tmp_path, qa=QAConfig(enabled=True, mode="fix", url="http://app.test", start="x"),
+        browse=_findings_browse(), completion=_FINDING, run_fix=fake_run_fix,
+    )
+    await process_qa_job(_job(), _cfg(), gh, deps)
+    # Only the report comment — no fix-PR / verify-fail comment.
+    assert len(gh.comments) == 1
+    assert "bug" in gh.comments[0]
+
+
+async def test_report_mode_does_not_run_fix(tmp_path: Path) -> None:
+    gh = FakeGH()
+    called: list[int] = []
+
+    async def fake_run_fix(job, cfg, gh_, repo_dir, state, findings):  # type: ignore[no-untyped-def]
+        called.append(1)
+        return FixOutcome(changed=True, verified=True, pr_url="x", detail="")
+
+    deps = _deps(
+        tmp_path, qa=QAConfig(enabled=True, mode="report", url="http://app.test", start="x"),
+        browse=_findings_browse(), completion=_FINDING, run_fix=fake_run_fix,
+    )
+    await process_qa_job(_job(), _cfg(), gh, deps)
+    assert called == []  # report mode never invokes fix

@@ -103,6 +103,25 @@ class GitHubClient:
             if r.status not in (200, 201):
                 raise GitHubError(f"comment failed ({r.status}): {await r.text()}")
 
+    async def create_pull_request(
+        self, installation_id: int, owner: str, repo: str,
+        *, head: str, base: str, title: str, body: str,
+    ) -> str:
+        """Open a PR from `head` into `base`. Returns the new PR's html_url."""
+        token = await self._installation_token(installation_id)
+        url = f"{GITHUB_API}/repos/{owner}/{repo}/pulls"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        payload = {"title": title, "body": body, "head": head, "base": base}
+        async with self._session.post(url, headers=headers, json=payload) as r:
+            if r.status not in (200, 201):
+                raise GitHubError(f"create PR failed ({r.status}): {await r.text()}")
+            data = await r.json()
+        return str(data.get("html_url", ""))
+
     async def dismiss_self_reviews(
         self, installation_id: int, owner: str, repo: str, pr_number: int
     ) -> None:
