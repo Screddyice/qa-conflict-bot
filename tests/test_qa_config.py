@@ -40,3 +40,12 @@ def test_qa_absent_block_is_disabled(tmp_path: Path) -> None:
     (tmp_path / ".pr-conflict-bot.toml").write_text('[verify]\ntest = "pytest"\n')
     ov = load_repo_override(tmp_path)
     assert ov.qa.enabled is False
+
+
+def test_qa_partial_block_uses_defaults(tmp_path: Path) -> None:
+    (tmp_path / ".pr-conflict-bot.toml").write_text("[qa]\nenabled = true\n")
+    ov = load_repo_override(tmp_path)
+    assert ov.qa.enabled is True
+    assert ov.qa.mode == "report"
+    assert ov.qa.tier == "standard"
+    assert ov.qa.lens == ("functional",)

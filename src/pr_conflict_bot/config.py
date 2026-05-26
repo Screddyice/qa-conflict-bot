@@ -213,11 +213,13 @@ def load_repo_override(
     ) if v else None
     behavior = data.get("behavior", {})
     q = data.get("qa", {})
+    # Always construct QAConfig; `enabled=False` (not None) is the opt-out sentinel,
+    # unlike `verify` which is None when its section is absent.
     qa = QAConfig(
         enabled=bool(q.get("enabled", False)),
-        mode=str(q.get("mode", "report")),
+        mode=str(q.get("mode", "report")),  # "report" | "fix" — validated at QA-run time, not here
         tier=str(q.get("tier", "standard")),
-        lens=tuple(q.get("lens", ["functional"])),
+        lens=tuple(str(s) for s in q.get("lens", ["functional"])),
         url=str(q.get("url", "")),
         start=str(q.get("start", "")),
         build=str(q.get("build", "")),
