@@ -112,6 +112,15 @@ class Config:
     owner has a token here, it also posts the findings to that PR's Linear issue.
     Owners absent from the map (e.g. repos with no Linear) are silently skipped.
     Kept out of the repo TOML on purpose — these are secrets, server-side only."""
+    qa_default_enabled_orgs: frozenset[str] = field(default_factory=frozenset)
+    """Owners (lower-cased) where QA is ON by default — a repo with no `[qa]
+    enabled` key inherits enabled=true. Env `QA_DEFAULT_ENABLED_ORGS`. A repo can
+    still opt out with `[qa] enabled = false`. RS21 repos are force-excluded
+    regardless (see qa_policy.is_rs21)."""
+    qa_default_mode: str = "report"
+    """Default QA mode for org-default-enabled repos when the repo TOML doesn't
+    set `[qa] mode`. Env `QA_DEFAULT_MODE`. Code-default is the safe "report";
+    set to "fix" server-side to turn on org-wide auto-fix PRs."""
 
 
 def _required(key: str) -> str:
@@ -195,6 +204,12 @@ def load_from_env() -> Config:
             if u.strip()
         ),
         linear_tokens=_parse_linear_tokens(os.environ.get("LINEAR_TOKENS", "")),
+        qa_default_enabled_orgs=frozenset(
+            o.strip().lower()
+            for o in os.environ.get("QA_DEFAULT_ENABLED_ORGS", "").split(",")
+            if o.strip()
+        ),
+        qa_default_mode=os.environ.get("QA_DEFAULT_MODE", "report"),
     )
 
 
@@ -206,6 +221,12 @@ class RepoOverride:
     max_files_per_pr: int = 50
     enabled: bool = True
     qa: QAConfig = field(default_factory=QAConfig)
+    qa_enabled_set: bool = False
+    """True if the repo's TOML explicitly set `[qa] enabled`. Lets the resolver
+    distinguish "repo said false" (opt-out, wins) from "repo silent" (inherit the
+    org default)."""
+    qa_mode_set: bool = False
+    """True if the repo's TOML explicitly set `[qa] mode` (else inherit org default)."""
 
 
 def load_repo_override(
@@ -255,4 +276,6 @@ def load_repo_override(
         max_files_per_pr=int(max_files) if max_files is not None else default_max_files_per_pr,
         enabled=bool(behavior.get("enabled", True)),
         qa=qa,
+        qa_enabled_set="enabled" in q,
+        qa_mode_set="mode" in q,
     )

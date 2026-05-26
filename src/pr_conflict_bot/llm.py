@@ -194,3 +194,31 @@ async def _resolve_with_codex(req: ResolveRequest, cfg: LLMConfig, *, timeout: f
         _build_prompt(req),
     ]
     await _run(cmd, cwd=None, env=os.environ.copy(), timeout=timeout)
+
+
+async def apply_edit(
+    prompt: str, cfg: LLMConfig, *, cwd: Path, timeout: float = 600.0
+) -> None:
+    """Run the backend in EDIT mode to modify files under `cwd` per `prompt`.
+
+    Used by QA fix mode. Unlike `complete()` (read-only judgment), this lets the
+    model write files — same mechanism as the conflict resolver, but with a
+    free-form prompt instead of the per-file conflict template.
+    """
+    if cfg.backend == "claude":
+        cmd = [
+            cfg.resolved_binary(), "-p", "--dangerously-skip-permissions",
+            *cfg.extra_args, prompt,
+        ]
+        env = os.environ.copy()
+        if cfg.oauth_token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = cfg.oauth_token
+        await _run(cmd, cwd=cwd, env=env, timeout=timeout)
+    elif cfg.backend == "codex":
+        cmd = [
+            cfg.resolved_binary(), "exec", "--full-auto", "--sandbox", cfg.sandbox,
+            "--cd", str(cwd), *cfg.extra_args, prompt,
+        ]
+        await _run(cmd, cwd=None, env=os.environ.copy(), timeout=timeout)
+    else:
+        raise LLMError(f"unknown LLM_BACKEND: {cfg.backend!r}; supported: 'claude', 'codex'")

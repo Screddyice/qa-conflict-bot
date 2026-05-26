@@ -144,16 +144,16 @@ skip_paths = ["package-lock.json", "**/migrations/*"]
 max_files_per_pr = 50
 ```
 
-## QA mode (report-only)
+## QA mode
 
 QA mode is a second, independent job flow that runs alongside conflict
-resolution. On a PR in a repo that opts in, it builds and serves the PR
-checkout, captures the running page with a headless browser, asks the
-configured LLM backend for a findings judgment, and posts a QA report
-comment. **In this milestone (M1) it is report-only — it never edits code.**
+resolution. On a PR, it builds and serves the PR checkout, captures the running
+page with a headless browser, asks the configured LLM backend for a findings
+judgment, and posts a QA report comment. With `mode = "fix"` it also opens a
+fix PR (see below).
 
-It is **opt-in per repo**: nothing runs until a repo adds `[qa] enabled = true`
-to its `.pr-conflict-bot.toml`.
+It can be **opt-in per repo** (`[qa] enabled = true` in `.pr-conflict-bot.toml`)
+or **on-by-default for whole orgs** (see "Org-wide auto-QA").
 
 ```toml
 [qa]
@@ -206,6 +206,44 @@ so it never creates tickets — it comments on the one that's already linked.
 Owners with no token, or PRs with no linked Linear issue, are skipped silently.
 A clean QA pass never posts to Linear. The whole step is best-effort: a Linear
 failure is logged and never breaks the PR comment or the QA flow.
+
+### Org-wide auto-QA
+
+Instead of a `[qa]` block in every repo, you can turn QA on by default for whole
+GitHub orgs with a server-side env var:
+
+```bash
+QA_DEFAULT_ENABLED_ORGS=your-org,your-other-org   # lower-cased owners
+QA_DEFAULT_MODE=report                            # or "fix" (see below)
+```
+
+For repos in those orgs, QA is enabled without a TOML. Precedence:
+`[qa] enabled` in a repo's TOML always wins (so a repo can opt out with
+`enabled = false`), else it inherits the org default.
+
+Because there's no per-repo `[qa] start`, the bot **auto-detects** how to build
+and serve each app from the clone (Next.js, Vite, react-scripts, a generic
+`dev`/`start` script, or a static `index.html`; package manager from the
+lockfile). When it can't detect a servable app — or the app won't come up — an
+**org-default repo is skipped silently** (no comment), so QA never spams PRs in
+non-web repos. A repo that explicitly opted in still gets a "did not run"
+comment so the owner knows to fix its config.
+
+**RS21 repos** (owner or name containing `rs21`) are hard-excluded from QA
+regardless of any config.
+
+### Fix mode
+
+With `mode = "fix"` (per repo, or org-wide via `QA_DEFAULT_MODE=fix`), when QA
+finds issues it edits the clone to fix them, runs the verify gate, and — only if
+the gate passes — opens a **new PR** (`qa-fix/<branch>-<sha>`, targeting the
+original PR's branch) listing each finding it addressed, then comments the fix
+PR's link on the original PR. **It never auto-merges.**
+
+Fix mode **requires a real verify gate**: if the effective `[verify]` config has
+no non-empty step, no fix PR is opened (an empty gate trivially "passes", which
+would mean shipping unverified AI edits). So fix PRs are only opened for repos
+where there's a way to check them. RS21 repos never run fix mode.
 
 ## Recommended branch protection
 
