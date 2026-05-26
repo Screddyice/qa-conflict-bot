@@ -106,6 +106,68 @@ async def _run(cmd: list[str], *, cwd: Path | None, env: dict[str, str], timeout
         )
 
 
+async def _run_capture(
+    cmd: list[str], *, cwd: Path | None, env: dict[str, str], timeout: float
+) -> str:
+    """Like _run but returns decoded stdout. Raises LLMError on non-zero exit."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError as e:
+        proc.kill()
+        await proc.wait()
+        raise LLMError(f"{cmd[0]} timed out after {timeout}s") from e
+    if proc.returncode != 0:
+        raise LLMError(
+            f"{cmd[0]} failed (rc={proc.returncode}):\n"
+            f"stderr:\n{stderr_b.decode(errors='replace')}"
+        )
+    return stdout_b.decode(errors="replace")
+
+
+async def complete(
+    prompt: str, cfg: LLMConfig, *, cwd: Path | None = None, timeout: float = 300.0
+) -> str:
+    """Read-only one-shot completion: prompt in, model's text out. No file edits.
+
+    Used by QA mode for judgment calls (test planning, triage). The conflict
+    flow's `resolve_file` is for editing; this is for reasoning.
+    """
+    if cfg.backend == "claude":
+        cmd = [
+            cfg.resolved_binary(),
+            "-p",
+            "--dangerously-skip-permissions",
+            *cfg.extra_args,
+            prompt,
+        ]
+        env = os.environ.copy()
+        if cfg.oauth_token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = cfg.oauth_token
+        return await _run_capture(cmd, cwd=cwd, env=env, timeout=timeout)
+    if cfg.backend == "codex":
+        cmd = [
+            cfg.resolved_binary(),
+            "exec",
+            "--sandbox",
+            "read-only",
+            "--cd",
+            str(cwd or Path.cwd()),
+            *cfg.extra_args,
+            prompt,
+        ]
+        return await _run_capture(cmd, cwd=None, env=os.environ.copy(), timeout=timeout)
+    raise LLMError(
+        f"unknown LLM_BACKEND: {cfg.backend!r}; supported: 'claude', 'codex'"
+    )
+
+
 async def _resolve_with_claude(req: ResolveRequest, cfg: LLMConfig, *, timeout: float) -> None:
     cmd = [
         cfg.resolved_binary(),
