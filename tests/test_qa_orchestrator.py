@@ -14,6 +14,7 @@ from pr_conflict_bot.config import (
 )
 from pr_conflict_bot.qa.browse import FakeBrowse, PageState
 from pr_conflict_bot.qa.orchestrator import QADeps, process_qa_job
+from pr_conflict_bot.qa.url_resolver import URLResolutionError
 from pr_conflict_bot.server import PRJob
 
 
@@ -105,3 +106,65 @@ async def test_findings_appear_in_comment(tmp_path: Path) -> None:
     await process_qa_job(_job(), _cfg(), gh, deps)
     assert "500" in gh.comments[0]
     assert "/10" in gh.comments[0]
+
+
+async def test_url_resolution_failure_posts_did_not_run(tmp_path: Path) -> None:
+    gh = FakeGH()
+    browse = FakeBrowse(PageState("http://app.test", 200, (), "ok", None))
+
+    @contextlib.asynccontextmanager
+    async def failing_open_url(_repo: Path, _qa: QAConfig) -> AsyncIterator[str]:
+        raise URLResolutionError("no server")
+        yield ""  # pragma: no cover  (makes this an async generator)
+
+    async def fake_complete(prompt: str, cfg: LLMConfig) -> str:
+        return "[]"
+
+    async def fake_clone(_job: PRJob, _cfg: Config, _gh: object) -> Path:
+        return tmp_path
+
+    async def fake_cleanup(_repo: Path) -> None:
+        return None
+
+    deps = QADeps(
+        load_qa=lambda _root: QAConfig(enabled=True, url="http://app.test", start="x"),
+        clone=fake_clone,
+        open_url=failing_open_url,
+        browse=browse,
+        complete=fake_complete,
+        cleanup=fake_cleanup,
+    )
+    await process_qa_job(_job(), _cfg(), gh, deps)
+    assert len(gh.comments) == 1
+    assert "Did not run" in gh.comments[0]
+    assert "no server" in gh.comments[0]
+
+
+async def test_unexpected_error_posts_error_comment(tmp_path: Path) -> None:
+    gh = FakeGH()
+
+    async def boom_clone(_job: PRJob, _cfg: Config, _gh: object) -> Path:
+        raise RuntimeError("kaboom")
+
+    async def fake_complete(prompt: str, cfg: LLMConfig) -> str:
+        return "[]"
+
+    @contextlib.asynccontextmanager
+    async def fake_open_url(_repo: Path, _qa: QAConfig) -> AsyncIterator[str]:
+        yield "http://app.test"
+
+    async def fake_cleanup(_repo: Path) -> None:
+        return None
+
+    deps = QADeps(
+        load_qa=lambda _root: QAConfig(enabled=True),
+        clone=boom_clone,
+        open_url=fake_open_url,
+        browse=FakeBrowse(PageState("http://app.test", 200, (), "ok", None)),
+        complete=fake_complete,
+        cleanup=fake_cleanup,
+    )
+    await process_qa_job(_job(), _cfg(), gh, deps)
+    assert len(gh.comments) == 1
+    assert "unexpected error" in gh.comments[0]
+    assert "kaboom" in gh.comments[0]

@@ -41,7 +41,7 @@ LoadQAFn = Callable[[Path], QAConfig]
 CleanupFn = Callable[[Path], Awaitable[None]]
 
 
-@dataclass
+@dataclass(frozen=True)
 class QADeps:
     load_qa: LoadQAFn
     clone: CloneFn
@@ -83,6 +83,8 @@ async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None
     score = 10.0
 
     try:
+        # We clone before the enabled check because [qa] lives in the repo's
+        # .pr-conflict-bot.toml — same clone-then-check pattern as the conflict flow.
         repo_dir = await deps.clone(job, cfg, gh)
         qa = deps.load_qa(repo_dir)
         if not qa.enabled:
