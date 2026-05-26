@@ -68,7 +68,7 @@ def default_deps(cfg: Config, browse_binary: str) -> QADeps:
         load_qa=lambda root: load_repo_override(root).qa,
         clone=_default_clone,
         open_url=serve_via_start_command,
-        browse=SubprocessBrowse(browse_binary),
+        browse=SubprocessBrowse(browse_binary, cwd=cfg.work_dir),
         complete=llm.complete,
         cleanup=git_ops.cleanup,
     )

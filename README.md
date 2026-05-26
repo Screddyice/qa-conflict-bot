@@ -180,13 +180,15 @@ Chromium** on the host. Point the bot at the built binary with `QA_BROWSE_BIN`
 QA_BROWSE_BIN=/usr/local/bin/browse
 ```
 
-> **Integration note (M1):** the `SubprocessBrowse` adapter in
-> `qa/browse.py` assumes a one-shot `browse snapshot <url> --json` contract
-> (`{http_status, console_errors, text}`). The vendored gstack CLI is
-> session/daemon-based and its `snapshot` emits an accessibility tree, so the
-> adapter must be reconciled against the real CLI before QA capture works
-> end-to-end. `tests/test_qa_browse_smoke.py` is the guard: it skips when no
-> `browse` is on `PATH` and is where that reconciliation gets verified.
+The vendored gstack `browse` is a **stateful session daemon** (one persistent
+headless Chromium per process cwd), so `SubprocessBrowse` snapshots a page by
+running a short command sequence against it — `goto <url>` (HTTP status),
+`text` (visible text), `console --errors`, and a best-effort `screenshot`. The
+daemon auto-starts on first use and is left running for reuse; captures are
+serialized with a lock because the daemon has a single active tab. The bot runs
+`browse` with its work dir as cwd so screenshots land inside the engine's path
+sandbox. `tests/test_qa_browse_smoke.py` drives the real binary end-to-end (it
+skips when no `browse` is on `PATH`).
 
 ## Recommended branch protection
 
