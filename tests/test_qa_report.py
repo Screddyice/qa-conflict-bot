@@ -34,3 +34,14 @@ def test_format_comment_failure_path() -> None:
     out = format_comment(url="", findings=[], score=0.0, failure="no QA url configured")
     assert "Did not run" in out
     assert "no QA url configured" in out
+
+
+def test_format_comment_no_findings_success_branch() -> None:
+    out = format_comment(url="http://x", findings=[], score=10.0, failure=None)
+    assert "No issues found" in out
+    assert "10.0/10" in out
+
+
+def test_health_score_unknown_severity_defaults_to_one() -> None:
+    # an out-of-vocabulary severity is weighted as 1.0 (same as "medium")
+    assert health_score([Finding("bogus", "t", "d")]) == 9.0
