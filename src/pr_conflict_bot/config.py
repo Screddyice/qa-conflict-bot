@@ -55,6 +55,22 @@ class VerifyConfig:
 
 
 @dataclass(frozen=True)
+class QAConfig:
+    """Per-repo QA-mode settings from the `[qa]` table of .pr-conflict-bot.toml.
+
+    QA is opt-in: `enabled` defaults to False so no repo runs QA until it asks.
+    `mode = "fix"` is reserved for M4 and hard-blocked on RS21 repos there.
+    """
+    enabled: bool = False
+    mode: str = "report"            # "report" | "fix"
+    tier: str = "standard"          # "quick" | "standard" | "exhaustive"
+    lens: tuple[str, ...] = ("functional",)
+    url: str = ""                   # start-command fallback target
+    start: str = ""                 # command to serve the app
+    build: str = ""                 # optional pre-start build command
+
+
+@dataclass(frozen=True)
 class BotIdentity:
     git_name: str = "pr-conflict-bot"
     git_email: str = "pr-conflict-bot@users.noreply.github.com"
@@ -167,6 +183,7 @@ class RepoOverride:
     skip_paths: tuple[str, ...] = ()
     max_files_per_pr: int = 50
     enabled: bool = True
+    qa: QAConfig = field(default_factory=QAConfig)
 
 
 def load_repo_override(
@@ -195,6 +212,16 @@ def load_repo_override(
         timeout_seconds=int(v.get("timeout_seconds", 600)),
     ) if v else None
     behavior = data.get("behavior", {})
+    q = data.get("qa", {})
+    qa = QAConfig(
+        enabled=bool(q.get("enabled", False)),
+        mode=str(q.get("mode", "report")),
+        tier=str(q.get("tier", "standard")),
+        lens=tuple(q.get("lens", ["functional"])),
+        url=str(q.get("url", "")),
+        start=str(q.get("start", "")),
+        build=str(q.get("build", "")),
+    )
     # Repo TOML wins; env-defaults fill in only what's missing.
     skip_paths = behavior.get("skip_paths")
     max_files = behavior.get("max_files_per_pr")
@@ -203,4 +230,5 @@ def load_repo_override(
         skip_paths=tuple(skip_paths) if skip_paths is not None else default_skip_paths,
         max_files_per_pr=int(max_files) if max_files is not None else default_max_files_per_pr,
         enabled=bool(behavior.get("enabled", True)),
+        qa=qa,
     )
