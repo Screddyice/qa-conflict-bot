@@ -49,7 +49,9 @@ async def serve_via_start_command(
     repo_dir: Path, qa: QAConfig, *, ready_timeout: float = 120.0
 ) -> AsyncIterator[str]:
     if not qa.start or not qa.url:
-        raise URLResolutionError("`[qa] start` and `[qa] url` are both required")
+        raise URLResolutionError(
+            "`[qa] start` and `[qa] url` are each required (one or both missing)"
+        )
 
     if qa.build:
         builder = await asyncio.create_subprocess_shell(
@@ -73,14 +75,20 @@ async def serve_via_start_command(
         yield qa.url
     finally:
         log.debug("qa.start_command.terminating", pid=server.pid)
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(os.getpgid(server.pid), signal.SIGTERM)
+        pgid: int | None
         try:
-            await asyncio.wait_for(server.wait(), timeout=5.0)
-        except TimeoutError:
+            pgid = os.getpgid(server.pid)
+        except ProcessLookupError:
+            pgid = None
+        if pgid is not None:
             with contextlib.suppress(ProcessLookupError):
-                os.killpg(os.getpgid(server.pid), signal.SIGKILL)
-            with contextlib.suppress(asyncio.TimeoutError):
+                os.killpg(pgid, signal.SIGTERM)
+            try:
                 await asyncio.wait_for(server.wait(), timeout=5.0)
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(pgid, signal.SIGKILL)
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(server.wait(), timeout=5.0)
         # brief yield so the OS reclaims the port before the caller can rebind
         await asyncio.sleep(0.1)
