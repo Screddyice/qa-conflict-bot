@@ -47,6 +47,38 @@ def conflict_repo(tmp_path: Path) -> Path:
 
 
 @pytest.mark.asyncio
+async def test_commit_paths_excludes_untracked_artifacts(tmp_path: Path) -> None:
+    """A fix commit must carry only the model's edits — never a verify venv the
+    gate left untracked in the tree. Regression for the 300-file `.vbot` commit."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _run(["init", "-q", "-b", "main"], repo)
+    _run(["config", "user.email", "t@x"], repo)
+    _run(["config", "user.name", "T"], repo)
+    (repo / "mod.py").write_text("x = 1\n")
+    _run(["add", "."], repo)
+    _run(["commit", "-q", "-m", "init"], repo)
+
+    # Model edits a tracked file; capture what it touched (as default_run_fix does
+    # right after the LLM edit, before the verify gate runs).
+    (repo / "mod.py").write_text("x = 2\n")
+    edited = await git_ops.changed_paths(repo)
+    assert edited == ["mod.py"]
+
+    # Verify run then litters the tree with an untracked, non-gitignored venv.
+    venv = repo / ".vbot" / "bin"
+    venv.mkdir(parents=True)
+    (venv / "activate").write_text("junk\n")
+
+    await git_ops.commit_paths(repo, edited, "fix(qa): test")
+
+    committed = _run(["show", "--name-only", "--pretty=format:", "HEAD"], repo).split()
+    assert "mod.py" in committed
+    assert not any(".vbot" in f for f in committed)  # artifact NOT committed
+    assert ".vbot" in _run(["status", "--porcelain"], repo)  # still untracked
+
+
+@pytest.mark.asyncio
 async def test_merge_detects_conflict(conflict_repo: Path, tmp_path: Path) -> None:
     work = tmp_path / "work"
     work.mkdir()

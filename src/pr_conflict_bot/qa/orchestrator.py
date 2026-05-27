@@ -167,12 +167,18 @@ async def default_run_fix(
     if not await git_ops.has_changes(repo_dir):
         return FixOutcome(changed=False, verified=False, pushed=False, detail="model made no edits")
 
+    # Capture exactly what the model touched BEFORE the verify gate runs. The gate
+    # creates a venv/build artifacts in the clone; we must commit only the model's
+    # edits, never those artifacts (a blanket `git add -A` here once pushed the
+    # whole verify venv onto a PR).
+    edited = await git_ops.changed_paths(repo_dir)
+
     vr = await verify.run(cfg.verify, repo_dir)
     if not vr.passed:
         return FixOutcome(changed=True, verified=False, pushed=False, detail=vr.summary())
 
-    await git_ops.stage_and_commit_resolution(
-        repo_dir, f"fix(qa): address {len(findings)} QA finding(s) on #{job.pr_number}"
+    await git_ops.commit_paths(
+        repo_dir, edited, f"fix(qa): address {len(findings)} QA finding(s) on #{job.pr_number}"
     )
     # Push the fix onto the PR's own head branch. force-with-lease guards a
     # concurrent human push: if origin moved off pr_head_sha, the push is
