@@ -56,14 +56,18 @@ async def test_default_run_fix_no_edits_no_push(monkeypatch: pytest.MonkeyPatch)
     async def fake_apply_edit(prompt, cfg, *, cwd, timeout=600.0):  # type: ignore[no-untyped-def]
         return None
 
-    async def fake_has_changes(repo_dir):  # type: ignore[no-untyped-def]
-        return False
+    # A pre-existing artifact (e.g. .vbot from the code-QA verify) is dirty both
+    # before and after the edit, so the delta is empty → no edits.
+    cp = iter([[".vbot/"], [".vbot/"]])
+
+    async def fake_changed_paths(repo_dir):  # type: ignore[no-untyped-def]
+        return next(cp)
 
     async def fake_push(repo_dir, branch, expected_remote_sha):  # type: ignore[no-untyped-def]
         pushed.append(1)
 
     monkeypatch.setattr(orch.llm, "apply_edit", fake_apply_edit)
-    monkeypatch.setattr(orch.git_ops, "has_changes", fake_has_changes)
+    monkeypatch.setattr(orch.git_ops, "changed_paths", fake_changed_paths)
     monkeypatch.setattr(orch.git_ops, "push_with_lease", fake_push)
     out = await orch.default_run_fix(_job(), _cfg(), _GH(), Path("/tmp/x"), "fix prompt", _FINDINGS)  # type: ignore[arg-type]
     assert out.changed is False
@@ -100,20 +104,18 @@ async def test_default_run_fix_verify_fail_no_push(monkeypatch: pytest.MonkeyPat
     async def fake_apply_edit(prompt, cfg, *, cwd, timeout=600.0):  # type: ignore[no-untyped-def]
         return None
 
-    async def fake_has_changes(repo_dir):  # type: ignore[no-untyped-def]
-        return True
-
     async def fake_verify(cfg, repo_dir):  # type: ignore[no-untyped-def]
         return VerifyResult(passed=False, steps=(StepResult("test", "pytest", False, False, "boom"),))
 
+    cp = iter([[], ["src/pr_conflict_bot/_demo.py"]])  # before → after the edit
+
     async def fake_changed_paths(repo_dir):  # type: ignore[no-untyped-def]
-        return ["src/pr_conflict_bot/_demo.py"]
+        return next(cp)
 
     async def fake_push(repo_dir, branch, expected_remote_sha):  # type: ignore[no-untyped-def]
         pushed.append(1)
 
     monkeypatch.setattr(orch.llm, "apply_edit", fake_apply_edit)
-    monkeypatch.setattr(orch.git_ops, "has_changes", fake_has_changes)
     monkeypatch.setattr(orch.git_ops, "changed_paths", fake_changed_paths)
     monkeypatch.setattr(orch.verify, "run", fake_verify)
     monkeypatch.setattr(orch.git_ops, "push_with_lease", fake_push)
@@ -134,12 +136,12 @@ async def test_default_run_fix_success_pushes_to_pr_branch(monkeypatch: pytest.M
     async def fake_apply_edit(prompt, cfg, *, cwd, timeout=600.0):  # type: ignore[no-untyped-def]
         steps.append("edit")
 
-    async def fake_has_changes(repo_dir):  # type: ignore[no-untyped-def]
-        return True
+    # Code-QA scenario: a `.vbot` venv from the earlier verify run is ALREADY dirty
+    # before the model edits. We must commit only the delta (the model's file).
+    cp = iter([[".vbot/"], [".vbot/", "src/pr_conflict_bot/_demo.py"]])
 
     async def fake_changed_paths(repo_dir):  # type: ignore[no-untyped-def]
-        # What the model touched — captured before verify runs.
-        return ["src/pr_conflict_bot/_demo.py"]
+        return next(cp)
 
     async def fake_verify(cfg, repo_dir):  # type: ignore[no-untyped-def]
         return VerifyResult(passed=True, steps=())
@@ -155,7 +157,6 @@ async def test_default_run_fix_success_pushes_to_pr_branch(monkeypatch: pytest.M
         pushed.update(branch=branch, sha=expected_remote_sha)
 
     monkeypatch.setattr(orch.llm, "apply_edit", fake_apply_edit)
-    monkeypatch.setattr(orch.git_ops, "has_changes", fake_has_changes)
     monkeypatch.setattr(orch.git_ops, "changed_paths", fake_changed_paths)
     monkeypatch.setattr(orch.verify, "run", fake_verify)
     monkeypatch.setattr(orch.git_ops, "commit_paths", fake_commit_paths)
@@ -166,8 +167,7 @@ async def test_default_run_fix_success_pushes_to_pr_branch(monkeypatch: pytest.M
     assert out.pushed is True
     # Pushed onto the PR's OWN branch, lease-guarded by the PR head sha.
     assert pushed == {"branch": "feat", "sha": "abcdef123456"}
-    # Committed ONLY the model's edits (captured pre-verify), not whatever the
-    # verify run left in the tree.
+    # Committed ONLY the model's edit — the pre-existing .vbot venv is excluded.
     assert committed["paths"] == ["src/pr_conflict_bot/_demo.py"]
     assert committed["message"] == "fix(qa): address 1 QA finding(s) on #7"
     assert steps == ["edit", "commit", "push"]
@@ -181,11 +181,10 @@ async def test_default_run_fix_push_rejected_is_reported_not_silent(monkeypatch:
     async def fake_apply_edit(prompt, cfg, *, cwd, timeout=600.0):  # type: ignore[no-untyped-def]
         return None
 
-    async def fake_has_changes(repo_dir):  # type: ignore[no-untyped-def]
-        return True
+    cp = iter([[], ["src/pr_conflict_bot/_demo.py"]])  # before → after the edit
 
     async def fake_changed_paths(repo_dir):  # type: ignore[no-untyped-def]
-        return ["src/pr_conflict_bot/_demo.py"]
+        return next(cp)
 
     async def fake_verify(cfg, repo_dir):  # type: ignore[no-untyped-def]
         return VerifyResult(passed=True, steps=())
@@ -197,7 +196,6 @@ async def test_default_run_fix_push_rejected_is_reported_not_silent(monkeypatch:
         raise orch.git_ops.GitError("! [rejected] (stale info)")
 
     monkeypatch.setattr(orch.llm, "apply_edit", fake_apply_edit)
-    monkeypatch.setattr(orch.git_ops, "has_changes", fake_has_changes)
     monkeypatch.setattr(orch.git_ops, "changed_paths", fake_changed_paths)
     monkeypatch.setattr(orch.verify, "run", fake_verify)
     monkeypatch.setattr(orch.git_ops, "commit_paths", fake_commit_paths)
