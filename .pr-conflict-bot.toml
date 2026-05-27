@@ -9,6 +9,12 @@ typecheck = ".vbot/bin/mypy src"
 test = ".vbot/bin/pytest -q"
 timeout_seconds = 1200
 
+[qa]
+# TEMPORARY (test/qa-inplace-fix-e2e only): opt this repo into fix-mode QA to
+# exercise the in-place fix push end-to-end. Do NOT merge this block to main.
+enabled = true
+mode = "fix"
+
 [behavior]
 enabled = true
 
