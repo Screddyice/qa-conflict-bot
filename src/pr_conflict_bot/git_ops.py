@@ -211,13 +211,6 @@ async def pr_diff(repo_dir: Path, base_branch: str, *, limit: int = _DIFF_LIMIT)
     return out
 
 
-async def has_changes(repo_dir: Path) -> bool:
-    """True if the working tree has staged or unstaged changes (used to detect
-    whether an LLM fix edited anything)."""
-    _, out, _ = await _run(["git", "status", "--porcelain"], cwd=repo_dir)
-    return bool(out.strip())
-
-
 async def changed_paths(repo_dir: Path) -> list[str]:
     """Paths with uncommitted changes right now (modified, added, untracked, or
     renamed).

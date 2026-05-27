@@ -163,15 +163,16 @@ async def default_run_fix(
         # (changed=False) so org-wide auto repos without a gate just report.
         return FixOutcome(changed=False, verified=False, pushed=False, detail="no verify gate configured")
 
+    # Snapshot what's already dirty BEFORE the edit, then commit only the delta the
+    # edit introduces. The code-QA path runs the verify gate (creating a `.vbot`
+    # venv) BEFORE calling us, and our own gate run below adds more — capturing the
+    # delta excludes those artifacts no matter when they appeared. (A blanket
+    # `git add -A` here once pushed a 300-file venv onto a PR.)
+    before = set(await git_ops.changed_paths(repo_dir))
     await llm.apply_edit(fix_prompt, cfg.llm, cwd=repo_dir)
-    if not await git_ops.has_changes(repo_dir):
+    edited = [p for p in await git_ops.changed_paths(repo_dir) if p not in before]
+    if not edited:
         return FixOutcome(changed=False, verified=False, pushed=False, detail="model made no edits")
-
-    # Capture exactly what the model touched BEFORE the verify gate runs. The gate
-    # creates a venv/build artifacts in the clone; we must commit only the model's
-    # edits, never those artifacts (a blanket `git add -A` here once pushed the
-    # whole verify venv onto a PR).
-    edited = await git_ops.changed_paths(repo_dir)
 
     vr = await verify.run(cfg.verify, repo_dir)
     if not vr.passed:
