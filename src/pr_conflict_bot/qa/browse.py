@@ -51,14 +51,17 @@ class BrowseEngine(Protocol):
 
 
 class FakeBrowse:
-    """Test double: returns a preset PageState and records the URLs it saw."""
+    """Test double: returns a preset PageState and records the URLs and
+    screenshot targets it saw."""
 
     def __init__(self, state: PageState) -> None:
         self._state = state
         self.captured_urls: list[str] = []
+        self.screenshot_targets: list[Path | None] = []
 
     async def capture(self, url: str, *, screenshot_to: Path | None = None) -> PageState:
         self.captured_urls.append(url)
+        self.screenshot_targets.append(screenshot_to)
         return self._state
 
 

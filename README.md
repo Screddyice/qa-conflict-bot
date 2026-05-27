@@ -149,8 +149,8 @@ max_files_per_pr = 50
 QA mode is a second, independent job flow that runs alongside conflict
 resolution. On a PR, it builds and serves the PR checkout, captures the running
 page with a headless browser, asks the configured LLM backend for a findings
-judgment, and posts a QA report comment. With `mode = "fix"` it also opens a
-fix PR (see below).
+judgment, and posts a QA report comment. With `mode = "fix"` it also applies the
+fixes and pushes them onto the PR itself (see below).
 
 It can be **opt-in per repo** (`[qa] enabled = true` in `.pr-conflict-bot.toml`)
 or **on-by-default for whole orgs** (see "Org-wide auto-QA").
@@ -231,7 +231,7 @@ repos** (backends, CLIs, libraries — no servable app) get **code-level QA
 instead**: the LLM reviews the PR diff for bugs and the repo's verify gate runs
 (a gate failure is itself a finding). Code QA stays **silent on a clean diff**
 (no per-PR noise org-wide) and only comments when it finds something. In fix
-mode it opens a fix PR the same way the browser pass does.
+mode it pushes the fix onto the PR the same way the browser pass does.
 
 **RS21 repos** (owner or name containing `rs21`) are hard-excluded from QA
 regardless of any config.
@@ -239,15 +239,20 @@ regardless of any config.
 ### Fix mode
 
 With `mode = "fix"` (per repo, or org-wide via `QA_DEFAULT_MODE=fix`), when QA
-finds issues it edits the clone to fix them, runs the verify gate, and — only if
-the gate passes — opens a **new PR** (`qa-fix/<branch>-<sha>`, targeting the
-original PR's branch) listing each finding it addressed, then comments the fix
-PR's link on the original PR. **It never auto-merges.**
+finds issues it does **one sweep**: it edits the clone to fix them, runs the
+verify gate, and — only if the gate passes — commits the fix and **pushes it onto
+the PR's own branch** (`push --force-with-lease`, guarded by the PR head SHA), then
+comments that it did so. The fixes become part of the PR you're already
+reviewing; there's no separate fix PR to track. **It never auto-merges**, and the
+bot's own push is ignored by the self-trigger guard, so it does not re-review its
+own fix (no loop).
 
 Fix mode **requires a real verify gate**: if the effective `[verify]` config has
-no non-empty step, no fix PR is opened (an empty gate trivially "passes", which
-would mean shipping unverified AI edits). So fix PRs are only opened for repos
-where there's a way to check them. RS21 repos never run fix mode.
+no non-empty step, nothing is pushed (an empty gate trivially "passes", which
+would mean shipping unverified AI edits). So fixes only land for repos where
+there's a way to check them. If the lease-guarded push is rejected (a concurrent
+human push, a fork PR, or branch protection), the bot reports that on the PR
+rather than forcing. RS21 repos never run fix mode.
 
 ## Recommended branch protection
 

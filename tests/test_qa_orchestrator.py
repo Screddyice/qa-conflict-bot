@@ -33,6 +33,11 @@ class FakeGH:
     ) -> None:
         self.comments.append(body)
 
+    async def list_self_comment_bodies(
+        self, installation_id: int, owner: str, repo: str, pr_number: int
+    ) -> list[str]:
+        return list(self.comments)
+
 
 def _cfg(*, default_orgs: frozenset[str] = frozenset(), default_mode: str = "report") -> Config:
     return Config(
@@ -96,7 +101,7 @@ def _deps(
     async def _default_run_fix(
         job: PRJob, cfg: object, gh: object, repo_dir: Path, state: object, findings: list[object]
     ) -> FixOutcome:
-        return FixOutcome(changed=False, verified=False, pr_url=None, detail="")
+        return FixOutcome(changed=False, verified=False, pushed=False, detail="")
 
     return QADeps(
         load_qa=lambda _root: RepoOverride(qa=qa, qa_enabled_set=enabled_set, qa_mode_set=enabled_set),
@@ -248,6 +253,71 @@ async def test_unexpected_error_on_explicit_posts_error_comment(tmp_path: Path) 
     assert "kaboom" in gh.comments[0]
 
 
+# --- fix safety: bot artifacts must not be committed onto the PR ------------
+
+
+async def test_screenshot_written_outside_the_clone(tmp_path: Path) -> None:
+    # In fix mode the LLM's edits are committed with `git add -A` and pushed to
+    # the PR branch. A screenshot written inside the clone would be committed
+    # onto the PR — so it must live outside repo_dir.
+    gh = FakeGH()
+    browse = FakeBrowse(PageState("http://app.test", 200, (), "Welcome", None))
+    deps = _deps(
+        tmp_path,  # this is repo_dir (fake_clone returns it)
+        qa=QAConfig(enabled=True, url="http://app.test", start="x"),
+        browse=browse,
+        completion="[]",
+    )
+    await process_qa_job(_job(), _cfg(), gh, deps)
+    assert browse.screenshot_targets, "screenshot target was never set"
+    shot = browse.screenshot_targets[0]
+    assert shot is not None
+    assert tmp_path not in shot.parents  # not inside the clone
+
+
+# --- idempotency: don't re-review the same head sha -------------------------
+
+
+async def test_skips_when_head_sha_already_reviewed(tmp_path: Path) -> None:
+    gh = FakeGH()
+    browse = FakeBrowse(PageState("http://app.test", 200, (), "Welcome", None))
+    deps = _deps(
+        tmp_path,
+        qa=QAConfig(enabled=True, url="http://app.test", start="x"),
+        browse=browse,
+        completion="[]",
+    )
+    # First run reviews the page and posts one comment (with the reviewed-sha marker).
+    await process_qa_job(_job(), _cfg(), gh, deps)
+    assert len(gh.comments) == 1
+    assert len(browse.captured_urls) == 1
+
+    # Second delivery for the SAME head sha must be skipped: no new comment, and
+    # the page is not captured/judged again.
+    await process_qa_job(_job(), _cfg(), gh, deps)
+    assert len(gh.comments) == 1
+    assert len(browse.captured_urls) == 1
+
+
+async def test_new_head_sha_is_reviewed_again(tmp_path: Path) -> None:
+    gh = FakeGH()
+    browse = FakeBrowse(PageState("http://app.test", 200, (), "Welcome", None))
+    deps = _deps(
+        tmp_path,
+        qa=QAConfig(enabled=True, url="http://app.test", start="x"),
+        browse=browse,
+        completion="[]",
+    )
+    await process_qa_job(_job(), _cfg(), gh, deps)
+    assert len(gh.comments) == 1
+
+    # A new commit (different head sha) is a different review — not deduped.
+    from dataclasses import replace
+
+    await process_qa_job(replace(_job(), pr_head_sha="def456"), _cfg(), gh, deps)
+    assert len(gh.comments) == 2
+
+
 # --- org-wide auto behavior (new) -------------------------------------------
 
 
@@ -332,13 +402,13 @@ def _findings_browse() -> FakeBrowse:
     return FakeBrowse(PageState("http://app.test", 500, ("E",), "err", None))
 
 
-async def test_fix_mode_opens_pr_and_comments(tmp_path: Path) -> None:
+async def test_fix_mode_pushes_to_pr_and_comments(tmp_path: Path) -> None:
     gh = FakeGH()
     calls: list[int] = []
 
     async def fake_run_fix(job, cfg, gh_, repo_dir, state, findings):  # type: ignore[no-untyped-def]
         calls.append(len(findings))
-        return FixOutcome(changed=True, verified=True, pr_url="https://github.com/o/r/pull/99", detail="")
+        return FixOutcome(changed=True, verified=True, pushed=True, detail="")
 
     deps = _deps(
         tmp_path, qa=QAConfig(enabled=True, mode="fix", url="http://app.test", start="x"),
@@ -346,29 +416,29 @@ async def test_fix_mode_opens_pr_and_comments(tmp_path: Path) -> None:
     )
     await process_qa_job(_job(), _cfg(), gh, deps)
     assert calls == [1]
-    assert any("opened a fix PR" in c and "pull/99" in c for c in gh.comments)
+    assert any("pushed them to this PR" in c for c in gh.comments)
 
 
-async def test_fix_mode_verify_fail_no_pr(tmp_path: Path) -> None:
+async def test_fix_mode_verify_fail_no_push(tmp_path: Path) -> None:
     gh = FakeGH()
 
     async def fake_run_fix(job, cfg, gh_, repo_dir, state, findings):  # type: ignore[no-untyped-def]
-        return FixOutcome(changed=True, verified=False, pr_url=None, detail="[FAIL] test")
+        return FixOutcome(changed=True, verified=False, pushed=False, detail="[FAIL] test")
 
     deps = _deps(
         tmp_path, qa=QAConfig(enabled=True, mode="fix", url="http://app.test", start="x"),
         browse=_findings_browse(), completion=_FINDING, run_fix=fake_run_fix,
     )
     await process_qa_job(_job(), _cfg(), gh, deps)
-    assert any("verify gate" in c for c in gh.comments)
-    assert not any("pull/" in c for c in gh.comments)
+    assert any("verify gate failed" in c and "nothing pushed" in c for c in gh.comments)
+    assert not any("pushed them to this PR" in c for c in gh.comments)
 
 
 async def test_fix_mode_no_edits_only_report(tmp_path: Path) -> None:
     gh = FakeGH()
 
     async def fake_run_fix(job, cfg, gh_, repo_dir, state, findings):  # type: ignore[no-untyped-def]
-        return FixOutcome(changed=False, verified=False, pr_url=None, detail="")
+        return FixOutcome(changed=False, verified=False, pushed=False, detail="")
 
     deps = _deps(
         tmp_path, qa=QAConfig(enabled=True, mode="fix", url="http://app.test", start="x"),
@@ -425,7 +495,7 @@ async def test_code_qa_fix_mode_runs_fix(tmp_path: Path) -> None:
 
     async def fake_run_fix(job, cfg, gh_, repo_dir, fix_prompt, findings):  # type: ignore[no-untyped-def]
         calls.append(fix_prompt)
-        return FixOutcome(changed=True, verified=True, pr_url="https://github.com/o/r/pull/77", detail="")
+        return FixOutcome(changed=True, verified=True, pushed=True, detail="")
 
     deps = _deps(
         tmp_path, qa=QAConfig(enabled=True, mode="fix"), browse=FakeBrowse(PageState("x", 200, (), "x", None)),
@@ -434,7 +504,7 @@ async def test_code_qa_fix_mode_runs_fix(tmp_path: Path) -> None:
     )
     await process_qa_job(_job(owner="o"), _cfg(default_orgs=frozenset({"o"})), gh, deps)
     assert len(calls) == 1  # fix ran with a (diff-based) prompt
-    assert any("opened a fix PR" in c and "pull/77" in c for c in gh.comments)
+    assert any("pushed them to this PR" in c for c in gh.comments)
 
 
 async def test_code_qa_verify_failure_becomes_finding(tmp_path: Path) -> None:
@@ -460,7 +530,7 @@ async def test_report_mode_does_not_run_fix(tmp_path: Path) -> None:
 
     async def fake_run_fix(job, cfg, gh_, repo_dir, state, findings):  # type: ignore[no-untyped-def]
         called.append(1)
-        return FixOutcome(changed=True, verified=True, pr_url="x", detail="")
+        return FixOutcome(changed=True, verified=True, pushed=True, detail="")
 
     deps = _deps(
         tmp_path, qa=QAConfig(enabled=True, mode="report", url="http://app.test", start="x"),

@@ -33,15 +33,31 @@ from .url_resolver import URLResolutionError, serve_via_start_command
 log = structlog.get_logger()
 
 
+# Idempotency marker. Every QA comment carries a hidden HTML comment naming the
+# head SHA it reviewed. Before re-running, we skip a SHA we've already commented
+# on — without this, a strict reviewer re-judges and re-suggests fixes on every
+# redelivered/duplicate webhook (and on `opened`+`synchronize` for one commit),
+# which is the "keeps suggesting new fixes" loop.
+_REVIEW_MARKER_PREFIX = "qa-conflict-bot:reviewed="
+
+
+def _review_marker(sha: str) -> str:
+    return f"\n\n<!-- {_REVIEW_MARKER_PREFIX}{sha} -->"
+
+
+def _already_reviewed(comment_bodies: list[str], sha: str) -> bool:
+    needle = f"{_REVIEW_MARKER_PREFIX}{sha}"
+    return any(needle in body for body in comment_bodies)
+
+
 class _GH(Protocol):
     async def clone_url(self, installation_id: int, owner: str, repo: str) -> str: ...
     async def post_issue_comment(
         self, installation_id: int, owner: str, repo: str, pr_number: int, body: str
     ) -> None: ...
-    async def create_pull_request(
-        self, installation_id: int, owner: str, repo: str,
-        *, head: str, base: str, title: str, body: str,
-    ) -> str: ...
+    async def list_self_comment_bodies(
+        self, installation_id: int, owner: str, repo: str, pr_number: int
+    ) -> list[str]: ...
 
 
 CompleteFn = Callable[[str, LLMConfig], Awaitable[str]]
@@ -57,17 +73,18 @@ NotifyLinearFn = Callable[[str, str, str], Awaitable[bool]]
 @dataclass(frozen=True)
 class FixOutcome:
     """Result of a fix-mode attempt. `changed` = the LLM edited something;
-    `verified` = the verify gate passed (only meaningful if changed); `pr_url` =
-    the opened fix PR (only when changed and verified); `detail` = a short note
-    (e.g. the verify summary) for the explanatory PR comment."""
+    `verified` = the verify gate passed (only meaningful if changed); `pushed` =
+    the fix commit was pushed onto the PR's own branch (only when changed and
+    verified); `detail` = a short note (e.g. the verify summary, or why the push
+    didn't happen) for the explanatory PR comment."""
     changed: bool
     verified: bool
-    pr_url: str | None
+    pushed: bool
     detail: str
 
 
 # (job, cfg, gh, repo_dir, fix_prompt, findings) -> FixOutcome. fix_prompt is the
-# editing instruction (page-based or diff-based); findings drive the PR body.
+# editing instruction (page-based or diff-based); findings drive the comment.
 RunFixFn = Callable[
     ["PRJob", "Config", "_GH", Path, str, list[Finding]], Awaitable[FixOutcome]
 ]
@@ -82,7 +99,7 @@ async def _noop_notify_linear(owner: str, pr_url: str, body: str) -> bool:
 async def _noop_run_fix(
     job: PRJob, cfg: Config, gh: _GH, repo_dir: Path, fix_prompt: str, findings: list[Finding]
 ) -> FixOutcome:
-    return FixOutcome(changed=False, verified=False, pr_url=None, detail="")
+    return FixOutcome(changed=False, verified=False, pushed=False, detail="")
 
 
 async def _default_pr_diff(repo_dir: Path, base_branch: str) -> str:
@@ -115,67 +132,59 @@ async def _default_clone(job: PRJob, cfg: Config, gh: _GH) -> Path:
     return await git_ops.clone_pr(spec, git_name=cfg.identity.git_name, git_email=cfg.identity.git_email)
 
 
-def _fix_pr_body(job: PRJob, findings: list[Finding]) -> str:
-    lines = [
-        f"Automated QA fix for #{job.pr_number}.",
-        "",
-        "Addresses the findings QA reported on that PR:",
-    ]
-    for f in findings:
-        lines.append(f"- **[{f.severity}]** {f.title} — {f.detail}")
-    lines += [
-        "",
-        "_Opened by QA fix mode. The verify gate passed before this PR was created. "
-        "Review before merge — nothing auto-merges._",
-    ]
-    return "\n".join(lines)
-
-
 def _has_verify_gate(v: VerifyConfig) -> bool:
     """True if the verify config has at least one non-empty step. Fix mode refuses
-    to open a PR without one — an empty gate trivially 'passes' (every step skips),
-    which would mean shipping unverified AI edits. This is the load-bearing guard
-    for org-wide fix mode: PRs only get opened where there's a way to check them."""
+    to push without one — an empty gate trivially 'passes' (every step skips),
+    which would mean pushing unverified AI edits onto the PR. This is the
+    load-bearing guard for org-wide fix mode: fixes only land where there's a way
+    to check them."""
     return bool(v.lint.strip() or v.typecheck.strip() or v.test.strip())
 
 
 async def default_run_fix(
     job: PRJob, cfg: Config, gh: _GH, repo_dir: Path, fix_prompt: str, findings: list[Finding]
 ) -> FixOutcome:
-    """Real fix flow: verify-gate check → LLM edits the clone → verify gate → new
-    branch + fix PR. Works for both web (page-based prompt) and code (diff-based
-    prompt) QA — the caller supplies the editing prompt.
+    """Real fix flow: verify-gate check → LLM edits the clone (already checked out
+    on the PR's head branch) → verify gate → commit + push onto the PR's OWN
+    branch. One sweep: the fixes land on the PR itself ("resubmit with fixes"),
+    not a separate side-PR, so the PR's diff actually improves and re-reviewing it
+    is unnecessary. The resulting push is a bot-authored `synchronize` that the
+    server's self-trigger guard skips, so it never re-QAs its own fix (no loop).
 
-    Guards: no verify gate → no PR (don't even edit); no edits → no PR; verify
-    fail → no PR; success → a PR (never merged). RS21 never reaches here
-    (resolve_qa forces report mode).
-    """
+    Works for both web (page-based prompt) and code (diff-based prompt) QA — the
+    caller supplies the editing prompt.
+
+    Guards: no verify gate → no edit, no push; no edits → no push; verify fail →
+    no push; push rejected (e.g. fork PR / branch protection / concurrent human
+    push) → reported, not silent. RS21 never reaches here (resolve_qa forces
+    report mode)."""
     if not _has_verify_gate(cfg.verify):
-        # No way to verify the fix → don't open an unverified PR. Stay quiet
+        # No way to verify the fix → don't push unverified edits. Stay quiet
         # (changed=False) so org-wide auto repos without a gate just report.
-        return FixOutcome(changed=False, verified=False, pr_url=None, detail="no verify gate configured")
+        return FixOutcome(changed=False, verified=False, pushed=False, detail="no verify gate configured")
 
     await llm.apply_edit(fix_prompt, cfg.llm, cwd=repo_dir)
     if not await git_ops.has_changes(repo_dir):
-        return FixOutcome(changed=False, verified=False, pr_url=None, detail="model made no edits")
+        return FixOutcome(changed=False, verified=False, pushed=False, detail="model made no edits")
 
     vr = await verify.run(cfg.verify, repo_dir)
     if not vr.passed:
-        return FixOutcome(changed=True, verified=False, pr_url=None, detail=vr.summary())
+        return FixOutcome(changed=True, verified=False, pushed=False, detail=vr.summary())
 
-    branch = f"qa-fix/{job.pr_branch}-{job.pr_head_sha[:8]}"
-    await git_ops.create_branch(repo_dir, branch)
     await git_ops.stage_and_commit_resolution(
         repo_dir, f"fix(qa): address {len(findings)} QA finding(s) on #{job.pr_number}"
     )
-    await git_ops.push_new_branch(repo_dir, branch)
-    pr_url = await gh.create_pull_request(
-        job.installation_id, job.owner, job.repo,
-        head=branch, base=job.pr_branch,
-        title=f"QA fix for #{job.pr_number}: {len(findings)} finding(s)",
-        body=_fix_pr_body(job, findings),
-    )
-    return FixOutcome(changed=True, verified=True, pr_url=pr_url, detail="")
+    # Push the fix onto the PR's own head branch. force-with-lease guards a
+    # concurrent human push: if origin moved off pr_head_sha, the push is
+    # rejected and we report it rather than clobbering their work.
+    try:
+        await git_ops.push_with_lease(repo_dir, job.pr_branch, job.pr_head_sha)
+    except git_ops.GitError as e:
+        return FixOutcome(
+            changed=True, verified=True, pushed=False,
+            detail=f"verify passed but the fix could not be pushed to the PR branch: {e}",
+        )
+    return FixOutcome(changed=True, verified=True, pushed=True, detail="")
 
 
 def default_deps(cfg: Config, browse_binary: str, session: aiohttp.ClientSession) -> QADeps:
@@ -203,20 +212,29 @@ def default_deps(cfg: Config, browse_binary: str, session: aiohttp.ClientSession
 
 
 async def _comment(gh: _GH, job: PRJob, body: str) -> None:
-    await gh.post_issue_comment(job.installation_id, job.owner, job.repo, job.pr_number, body)
+    # Stamp every QA comment with the reviewed head SHA so re-deliveries of the
+    # same commit are skipped (see _already_reviewed in process_qa_job).
+    await gh.post_issue_comment(
+        job.installation_id, job.owner, job.repo, job.pr_number,
+        body + _review_marker(job.pr_head_sha),
+    )
 
 
 async def _post_fix_outcome(gh: _GH, job: PRJob, outcome: FixOutcome, n_findings: int) -> None:
-    """Comment on the original PR about a fix attempt. Shared by web + code QA."""
-    if outcome.pr_url:
+    """Comment on the PR about a fix attempt. Shared by web + code QA."""
+    if outcome.pushed:
         await _comment(gh, job,
-            f"**pr-conflict-bot: QA** opened a fix PR for the {n_findings} finding(s) "
-            f"above: {outcome.pr_url}\n\n"
-            "_Verify gate passed. Review before merge — nothing auto-merges._")
+            f"**pr-conflict-bot: QA** applied fixes for the {n_findings} finding(s) above, "
+            "the verify gate passed, and pushed them to this PR. Re-review the updated diff — "
+            "nothing auto-merges.")
+    elif outcome.changed and outcome.verified and not outcome.pushed:
+        await _comment(gh, job,
+            "**pr-conflict-bot: QA** fixed the finding(s) and the verify gate passed, but "
+            f"could not push to the PR branch.\n\n```\n{outcome.detail}\n```")
     elif outcome.changed and not outcome.verified:
         await _comment(gh, job,
             "**pr-conflict-bot: QA** attempted a fix but the verify gate failed — "
-            f"no PR opened.\n\n```\n{outcome.detail}\n```")
+            f"nothing pushed.\n\n```\n{outcome.detail}\n```")
 
 
 async def _code_qa(
@@ -224,7 +242,8 @@ async def _code_qa(
     qa: QAConfig, repo_dir: Path,
 ) -> None:
     """Code-level QA for repos with no servable web app: LLM reviews the PR diff +
-    the verify gate runs; findings → comment (+ Linear) and a fix PR in fix mode.
+    the verify gate runs; findings → comment (+ Linear) and a fix pushed to the
+    PR in fix mode.
 
     SILENT on a clean diff — org-wide code review must not comment on every PR.
     """
@@ -270,7 +289,8 @@ async def _code_qa(
                 job, fix_cfg, gh, repo_dir, methodology.build_code_fix_prompt(diff, findings), findings
             )
             await _post_fix_outcome(gh, job, outcome, len(findings))
-            L.info("qa code fix done", pr=outcome.pr_url)
+            L.info("qa code fix done", changed=outcome.changed,
+                   verified=outcome.verified, pushed=outcome.pushed)
         except Exception:
             L.warning("qa code fix flow failed", exc_info=True)
 
@@ -278,12 +298,31 @@ async def _code_qa(
 async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None:
     L = log.bind(delivery=job.delivery_id, owner=job.owner, repo=job.repo, pr=job.pr_number, flow="qa")
     repo_dir: Path | None = None
+    # The screenshot is written OUTSIDE the clone: in fix mode we push the LLM's
+    # edits onto the PR with `git add -A`, and a screenshot inside the tree would
+    # get committed onto the PR. work_dir is the browse sandbox root, so it's a
+    # legal target.
+    screenshot: Path | None = None
     # "explicit" = the repo asked for QA itself (set [qa] enabled, or gave a start
     # command). Explicit repos get failure comments; org-default ("auto") repos
     # skip silently on failure so we don't spam every PR across the org.
     explicit = False
 
     try:
+        # Idempotency: if we already posted a QA result for this exact head SHA,
+        # don't re-review it. Best-effort — a listing failure must never block QA
+        # (fall through and run, same as before). Done before the clone so a
+        # redelivered webhook costs one cheap API call, not a full QA pass.
+        try:
+            prior = await gh.list_self_comment_bodies(
+                job.installation_id, job.owner, job.repo, job.pr_number
+            )
+            if _already_reviewed(prior, job.pr_head_sha):
+                L.info("qa: head sha already reviewed, skipping", sha=job.pr_head_sha[:8])
+                return
+        except Exception:
+            L.warning("qa: could not check prior comments; proceeding", exc_info=True)
+
         # Clone before the enabled check because [qa] lives in the repo's
         # .pr-conflict-bot.toml — same clone-then-check pattern as the conflict flow.
         repo_dir = await deps.clone(job, cfg, gh)
@@ -310,7 +349,7 @@ async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None
         try:
             async with deps.open_url(repo_dir, qa) as live_url:
                 url = live_url
-                screenshot = repo_dir / ".qa-screenshot.png"
+                screenshot = cfg.work_dir / f".qa-screenshot-{job.delivery_id}.png"
                 state = await deps.browse.capture(url, screenshot_to=screenshot)
                 raw = await deps.complete(methodology.build_smoke_prompt(state), cfg.llm)
                 findings = methodology.parse_findings(raw)
@@ -343,9 +382,10 @@ async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None
             except Exception:
                 L.warning("qa linear notify failed", exc_info=True)
 
-        # Fix mode: on findings, let the backend fix them, verify, and open a fix
-        # PR. mode is "report" for RS21 (resolve_qa forces it) so this is skipped
-        # there. Best-effort: a fix failure never breaks the report path above.
+        # Fix mode: on findings, let the backend fix them, verify, and push the
+        # fix onto this PR. mode is "report" for RS21 (resolve_qa forces it) so
+        # this is skipped there. Best-effort: a fix failure never breaks the
+        # report path above.
         if qa.mode == "fix" and findings and state is not None:
             # Use the repo's own [verify] gate when it set one, else env defaults —
             # fix mode requires a real gate (default_run_fix enforces this).
@@ -357,7 +397,7 @@ async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None
                 )
                 await _post_fix_outcome(gh, job, outcome, len(findings))
                 L.info("qa fix done", changed=outcome.changed,
-                       verified=outcome.verified, pr=outcome.pr_url)
+                       verified=outcome.verified, pushed=outcome.pushed)
             except Exception:
                 L.warning("qa fix flow failed", exc_info=True)
 
@@ -371,6 +411,9 @@ async def process_qa_job(job: PRJob, cfg: Config, gh: _GH, deps: QADeps) -> None
                     url="", findings=[], score=0.0, failure=f"unexpected error: {e}",
                 ))
     finally:
+        if screenshot is not None:
+            with contextlib.suppress(Exception):
+                screenshot.unlink(missing_ok=True)
         if repo_dir is not None:
             with contextlib.suppress(Exception):
                 await deps.cleanup(repo_dir)

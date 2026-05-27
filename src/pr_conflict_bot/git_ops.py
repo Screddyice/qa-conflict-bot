@@ -218,18 +218,6 @@ async def has_changes(repo_dir: Path) -> bool:
     return bool(out.strip())
 
 
-async def create_branch(repo_dir: Path, branch: str) -> None:
-    """Create and switch to a new branch off the current HEAD."""
-    await _run(["git", "checkout", "-b", branch], cwd=repo_dir)
-
-
-async def push_new_branch(repo_dir: Path, branch: str) -> None:
-    """Push HEAD to a fresh remote branch. Plain push (no force) — the branch
-    name carries a short SHA so collisions are unlikely; a collision fails the
-    push, which the caller treats as 'no fix PR'."""
-    await _run(["git", "push", "origin", f"HEAD:refs/heads/{branch}"], cwd=repo_dir)
-
-
 async def cleanup(repo_dir: Path) -> None:
     if repo_dir.exists():
         shutil.rmtree(repo_dir, ignore_errors=True)
