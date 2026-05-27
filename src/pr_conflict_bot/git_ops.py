@@ -218,6 +218,40 @@ async def has_changes(repo_dir: Path) -> bool:
     return bool(out.strip())
 
 
+async def changed_paths(repo_dir: Path) -> list[str]:
+    """Paths with uncommitted changes right now (modified, added, untracked, or
+    renamed).
+
+    Capture this right after an LLM edit and BEFORE running a verify gate: the
+    gate may create a venv or build artifacts in the tree, and a fix commit must
+    carry only what the model touched — never those artifacts."""
+    _, out, _ = await _run(["git", "status", "--porcelain"], cwd=repo_dir)
+    paths: list[str] = []
+    for line in out.splitlines():
+        entry = line[3:]  # strip the 2-char XY status code + separating space
+        if not entry:
+            continue
+        if " -> " in entry:  # rename/copy: "old -> new" — stage both ends
+            old, new = entry.split(" -> ", 1)
+            paths.extend(p.strip().strip('"') for p in (old, new))
+        else:
+            paths.append(entry.strip().strip('"'))
+    return paths
+
+
+async def commit_paths(repo_dir: Path, paths: list[str], message: str) -> str:
+    """Stage exactly `paths` and commit them. Returns the new commit SHA.
+
+    Unlike stage_and_commit_resolution (which does `git add -A`), this never
+    sweeps in untracked artifacts a verify run left in the tree — so a fix commit
+    carries only the model's edits, not e.g. the verify venv."""
+    if paths:
+        await _run(["git", "add", "--", *paths], cwd=repo_dir)
+    await _run(["git", "commit", "--no-edit", "-m", message], cwd=repo_dir)
+    _, sha_out, _ = await _run(["git", "rev-parse", "HEAD"], cwd=repo_dir)
+    return sha_out.strip()
+
+
 async def cleanup(repo_dir: Path) -> None:
     if repo_dir.exists():
         shutil.rmtree(repo_dir, ignore_errors=True)

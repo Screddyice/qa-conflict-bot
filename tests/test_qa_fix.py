@@ -106,11 +106,15 @@ async def test_default_run_fix_verify_fail_no_push(monkeypatch: pytest.MonkeyPat
     async def fake_verify(cfg, repo_dir):  # type: ignore[no-untyped-def]
         return VerifyResult(passed=False, steps=(StepResult("test", "pytest", False, False, "boom"),))
 
+    async def fake_changed_paths(repo_dir):  # type: ignore[no-untyped-def]
+        return ["src/pr_conflict_bot/_demo.py"]
+
     async def fake_push(repo_dir, branch, expected_remote_sha):  # type: ignore[no-untyped-def]
         pushed.append(1)
 
     monkeypatch.setattr(orch.llm, "apply_edit", fake_apply_edit)
     monkeypatch.setattr(orch.git_ops, "has_changes", fake_has_changes)
+    monkeypatch.setattr(orch.git_ops, "changed_paths", fake_changed_paths)
     monkeypatch.setattr(orch.verify, "run", fake_verify)
     monkeypatch.setattr(orch.git_ops, "push_with_lease", fake_push)
     out = await orch.default_run_fix(_job(), _cfg(), _GH(), Path("/tmp/x"), "fix prompt", _FINDINGS)  # type: ignore[arg-type]
@@ -125,6 +129,7 @@ async def test_default_run_fix_success_pushes_to_pr_branch(monkeypatch: pytest.M
 
     steps: list[str] = []
     pushed: dict[str, str] = {}
+    committed: dict[str, object] = {}
 
     async def fake_apply_edit(prompt, cfg, *, cwd, timeout=600.0):  # type: ignore[no-untyped-def]
         steps.append("edit")
@@ -132,11 +137,17 @@ async def test_default_run_fix_success_pushes_to_pr_branch(monkeypatch: pytest.M
     async def fake_has_changes(repo_dir):  # type: ignore[no-untyped-def]
         return True
 
+    async def fake_changed_paths(repo_dir):  # type: ignore[no-untyped-def]
+        # What the model touched — captured before verify runs.
+        return ["src/pr_conflict_bot/_demo.py"]
+
     async def fake_verify(cfg, repo_dir):  # type: ignore[no-untyped-def]
         return VerifyResult(passed=True, steps=())
 
-    async def fake_commit(repo_dir, message):  # type: ignore[no-untyped-def]
-        steps.append(f"commit:{message}")
+    async def fake_commit_paths(repo_dir, paths, message):  # type: ignore[no-untyped-def]
+        steps.append("commit")
+        committed["paths"] = paths
+        committed["message"] = message
         return "newsha"
 
     async def fake_push(repo_dir, branch, expected_remote_sha):  # type: ignore[no-untyped-def]
@@ -145,8 +156,9 @@ async def test_default_run_fix_success_pushes_to_pr_branch(monkeypatch: pytest.M
 
     monkeypatch.setattr(orch.llm, "apply_edit", fake_apply_edit)
     monkeypatch.setattr(orch.git_ops, "has_changes", fake_has_changes)
+    monkeypatch.setattr(orch.git_ops, "changed_paths", fake_changed_paths)
     monkeypatch.setattr(orch.verify, "run", fake_verify)
-    monkeypatch.setattr(orch.git_ops, "stage_and_commit_resolution", fake_commit)
+    monkeypatch.setattr(orch.git_ops, "commit_paths", fake_commit_paths)
     monkeypatch.setattr(orch.git_ops, "push_with_lease", fake_push)
 
     out = await orch.default_run_fix(_job(), _cfg(), _GH(), Path("/tmp/x"), "fix prompt", _FINDINGS)  # type: ignore[arg-type]
@@ -154,7 +166,11 @@ async def test_default_run_fix_success_pushes_to_pr_branch(monkeypatch: pytest.M
     assert out.pushed is True
     # Pushed onto the PR's OWN branch, lease-guarded by the PR head sha.
     assert pushed == {"branch": "feat", "sha": "abcdef123456"}
-    assert steps == ["edit", "commit:fix(qa): address 1 QA finding(s) on #7", "push"]
+    # Committed ONLY the model's edits (captured pre-verify), not whatever the
+    # verify run left in the tree.
+    assert committed["paths"] == ["src/pr_conflict_bot/_demo.py"]
+    assert committed["message"] == "fix(qa): address 1 QA finding(s) on #7"
+    assert steps == ["edit", "commit", "push"]
 
 
 async def test_default_run_fix_push_rejected_is_reported_not_silent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -168,10 +184,13 @@ async def test_default_run_fix_push_rejected_is_reported_not_silent(monkeypatch:
     async def fake_has_changes(repo_dir):  # type: ignore[no-untyped-def]
         return True
 
+    async def fake_changed_paths(repo_dir):  # type: ignore[no-untyped-def]
+        return ["src/pr_conflict_bot/_demo.py"]
+
     async def fake_verify(cfg, repo_dir):  # type: ignore[no-untyped-def]
         return VerifyResult(passed=True, steps=())
 
-    async def fake_commit(repo_dir, message):  # type: ignore[no-untyped-def]
+    async def fake_commit_paths(repo_dir, paths, message):  # type: ignore[no-untyped-def]
         return "newsha"
 
     async def fake_push(repo_dir, branch, expected_remote_sha):  # type: ignore[no-untyped-def]
@@ -179,8 +198,9 @@ async def test_default_run_fix_push_rejected_is_reported_not_silent(monkeypatch:
 
     monkeypatch.setattr(orch.llm, "apply_edit", fake_apply_edit)
     monkeypatch.setattr(orch.git_ops, "has_changes", fake_has_changes)
+    monkeypatch.setattr(orch.git_ops, "changed_paths", fake_changed_paths)
     monkeypatch.setattr(orch.verify, "run", fake_verify)
-    monkeypatch.setattr(orch.git_ops, "stage_and_commit_resolution", fake_commit)
+    monkeypatch.setattr(orch.git_ops, "commit_paths", fake_commit_paths)
     monkeypatch.setattr(orch.git_ops, "push_with_lease", fake_push)
 
     out = await orch.default_run_fix(_job(), _cfg(), _GH(), Path("/tmp/x"), "fix prompt", _FINDINGS)  # type: ignore[arg-type]
