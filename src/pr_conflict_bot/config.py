@@ -126,6 +126,12 @@ class Config:
     Alerts fire only on the ok->fail transition of a subsystem (e.g. the LLM
     resolve step) and once on recovery — never per failing job. Unset = no
     alerting, behavior otherwise unchanged."""
+    alert_slack_bot_token: str | None = None
+    alert_slack_channel: str | None = None
+    """Bot-token alternative to the webhook (env `ALERT_SLACK_BOT_TOKEN` +
+    `ALERT_SLACK_CHANNEL`): posts via chat.postMessage; channel may be a channel
+    ID or a user ID (DM). Webhook wins if both transports are set. Both vars are
+    required together — half a pair disables alerting with a warning."""
 
 
 def _required(key: str) -> str:
@@ -216,6 +222,8 @@ def load_from_env() -> Config:
         ),
         qa_default_mode=os.environ.get("QA_DEFAULT_MODE", "report"),
         alert_slack_webhook_url=os.environ.get("ALERT_SLACK_WEBHOOK_URL") or None,
+        alert_slack_bot_token=os.environ.get("ALERT_SLACK_BOT_TOKEN") or None,
+        alert_slack_channel=os.environ.get("ALERT_SLACK_CHANNEL") or None,
     )
 
 
