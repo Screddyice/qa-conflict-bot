@@ -13,7 +13,7 @@ from pathlib import Path
 
 import structlog
 
-from . import git_ops, llm, verify
+from . import alerts, git_ops, llm, verify
 from .config import Config, LLMConfig, RepoOverride, VerifyConfig, load_repo_override
 from .github_api import GitHubClient
 from .server import PRJob
@@ -120,6 +120,14 @@ async def process_job(job: PRJob, cfg: Config, gh: GitHubClient) -> None:
     skipped: list[str] = []
     verify_result: verify.VerifyResult | None = None
     skip_comment = False
+    alerter = alerts.Alerter(
+        state_path=cfg.work_dir / "alert-state.json",
+        send=(
+            alerts.slack_send(cfg.alert_slack_webhook_url, gh.session)
+            if cfg.alert_slack_webhook_url
+            else None
+        ),
+    )
 
     try:
         clone_url = await gh.clone_url(job.installation_id, job.owner, job.repo)
@@ -186,9 +194,21 @@ async def process_job(job: PRJob, cfg: Config, gh: GitHubClient) -> None:
                 resolved.append(f)
                 L.info("resolved", file=f)
             except Exception as e:
-                failure = f"resolution failed for `{f}`: {e}"
-                L.exception("resolve failed", file=f)
+                # The PR comment gets a sanitized one-liner only — raw CLI
+                # output can carry env material. Full detail stays in journald.
+                category = alerts.categorize(e)
+                failure = alerts.public_reason(f, e)
+                L.exception("resolve failed", file=f, category=category)
+                await alerter.record_failure(
+                    "resolve",
+                    f"pr-conflict-bot: conflict resolution failing ({category}) — "
+                    f"first seen on {job.owner}/{job.repo}#{job.pr_number}. "
+                    "Alerting once until recovery; details in journald on the bot host.",
+                )
                 return
+
+        if resolved:
+            await alerter.record_success("resolve")
 
         if skipped:
             failure = (
