@@ -38,6 +38,11 @@ class GitHubClient:
         self._session = session
         self._tokens: dict[int, _CachedToken] = {}
 
+    @property
+    def session(self) -> aiohttp.ClientSession:
+        """Shared HTTP session, reusable by non-GitHub callers (e.g. Slack alerts)."""
+        return self._session
+
     def _app_jwt(self) -> str:
         now = int(time.time())
         # PyJWT >= 2.8 requires `iss` to be a string.

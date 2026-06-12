@@ -121,6 +121,11 @@ class Config:
     """Default QA mode for org-default-enabled repos when the repo TOML doesn't
     set `[qa] mode`. Env `QA_DEFAULT_MODE`. Code-default is the safe "report";
     set to "fix" server-side to turn on org-wide auto-fix PRs."""
+    alert_slack_webhook_url: str | None = None
+    """Slack incoming-webhook URL for ops alerts (env `ALERT_SLACK_WEBHOOK_URL`).
+    Alerts fire only on the ok->fail transition of a subsystem (e.g. the LLM
+    resolve step) and once on recovery — never per failing job. Unset = no
+    alerting, behavior otherwise unchanged."""
 
 
 def _required(key: str) -> str:
@@ -210,6 +215,7 @@ def load_from_env() -> Config:
             if o.strip()
         ),
         qa_default_mode=os.environ.get("QA_DEFAULT_MODE", "report"),
+        alert_slack_webhook_url=os.environ.get("ALERT_SLACK_WEBHOOK_URL") or None,
     )
 
 
