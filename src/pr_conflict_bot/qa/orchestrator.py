@@ -167,7 +167,7 @@ async def default_run_fix(
     if not await git_ops.has_changes(repo_dir):
         return FixOutcome(changed=False, verified=False, pushed=False, detail="model made no edits")
 
-    # Capture exactly what the model touched BEFORE the verify gate runs. The gate
+    # Canary edit: capture the model's touched files BEFORE the verify gate runs. The gate
     # creates a venv/build artifacts in the clone; we must commit only the model's
     # edits, never those artifacts (a blanket `git add -A` here once pushed the
     # whole verify venv onto a PR).
