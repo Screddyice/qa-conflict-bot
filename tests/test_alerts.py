@@ -131,3 +131,75 @@ async def test_keys_are_independent(tmp_path: Path) -> None:
     sent = await a.record_failure("qa", "qa down")
     assert sent is True
     assert send.messages == ["resolve down", "qa down"]
+
+
+# --- slack bot-token sender + send selection --------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeSession:
+    """Captures post() calls; returns a configurable Slack-style body."""
+
+    def __init__(self, payload: dict | None = None) -> None:
+        self.calls: list[dict] = []
+        self._payload = payload or {"ok": True}
+
+    def post(self, url, **kw):
+        self.calls.append({"url": url, **kw})
+        return _FakeResponse(self._payload)
+
+
+async def test_slack_bot_send_posts_chat_postmessage(tmp_path: Path) -> None:
+    from pr_conflict_bot.alerts import slack_bot_send
+
+    session = _FakeSession()
+    send = slack_bot_send("xoxb-test-token", "U123", session)  # type: ignore[arg-type]
+    await send("hello ops")
+    (call,) = session.calls
+    assert call["url"] == "https://slack.com/api/chat.postMessage"
+    assert call["headers"]["Authorization"] == "Bearer xoxb-test-token"
+    assert call["json"] == {"channel": "U123", "text": "hello ops"}
+
+
+async def test_slack_bot_send_raises_on_ok_false() -> None:
+    """Slack returns HTTP 200 with ok=false on API errors — must not pass silently."""
+    import pytest
+
+    from pr_conflict_bot.alerts import slack_bot_send
+
+    session = _FakeSession({"ok": False, "error": "channel_not_found"})
+    send = slack_bot_send("xoxb-test-token", "U123", session)  # type: ignore[arg-type]
+    with pytest.raises(Exception, match="channel_not_found"):
+        await send("hello")
+
+
+def test_build_send_unconfigured_returns_none() -> None:
+    from pr_conflict_bot.alerts import build_send
+
+    assert build_send(None, None, None, _FakeSession()) is None  # type: ignore[arg-type]
+    # token without channel (or vice versa) is misconfig -> disabled, not a crash
+    assert build_send(None, "xoxb-x", None, _FakeSession()) is None  # type: ignore[arg-type]
+    assert build_send(None, None, "U123", _FakeSession()) is None  # type: ignore[arg-type]
+
+
+def test_build_send_prefers_webhook_then_bot_token() -> None:
+    from pr_conflict_bot.alerts import build_send
+
+    assert build_send("https://hooks.slack.com/x", None, None, _FakeSession()) is not None  # type: ignore[arg-type]
+    assert build_send(None, "xoxb-x", "U123", _FakeSession()) is not None  # type: ignore[arg-type]

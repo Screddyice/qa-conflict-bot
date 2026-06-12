@@ -122,10 +122,11 @@ async def process_job(job: PRJob, cfg: Config, gh: GitHubClient) -> None:
     skip_comment = False
     alerter = alerts.Alerter(
         state_path=cfg.work_dir / "alert-state.json",
-        send=(
-            alerts.slack_send(cfg.alert_slack_webhook_url, gh.session)
-            if cfg.alert_slack_webhook_url
-            else None
+        send=alerts.build_send(
+            cfg.alert_slack_webhook_url,
+            cfg.alert_slack_bot_token,
+            cfg.alert_slack_channel,
+            gh.session,
         ),
     )
 

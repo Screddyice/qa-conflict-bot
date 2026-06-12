@@ -135,3 +135,45 @@ def slack_send(webhook_url: str, session: aiohttp.ClientSession) -> SendFn:
             resp.raise_for_status()
 
     return _send
+
+
+def slack_bot_send(bot_token: str, channel: str, session: aiohttp.ClientSession) -> SendFn:
+    """Build a SendFn that posts via chat.postMessage with a bot token.
+
+    For workspaces with an Assist bot but no incoming webhook configured.
+    `channel` may be a channel ID or a user ID (DM). Slack signals API errors
+    with HTTP 200 + ok=false, so the body must be checked, not just the status.
+    """
+
+    async def _send(text: str) -> None:
+        async with session.post(
+            "https://slack.com/api/chat.postMessage",
+            headers={"Authorization": f"Bearer {bot_token}"},
+            json={"channel": channel, "text": text},
+        ) as resp:
+            resp.raise_for_status()
+            body = await resp.json()
+            if not body.get("ok"):
+                raise RuntimeError(f"slack chat.postMessage failed: {body.get('error')}")
+
+    return _send
+
+
+def build_send(
+    webhook_url: str | None,
+    bot_token: str | None,
+    channel: str | None,
+    session: aiohttp.ClientSession,
+) -> SendFn | None:
+    """Pick the configured Slack transport: webhook wins, else bot token + channel.
+
+    Returns None (alerting disabled) when nothing — or only half of the
+    bot-token pair — is configured; a misconfig must never crash job processing.
+    """
+    if webhook_url:
+        return slack_send(webhook_url, session)
+    if bot_token and channel:
+        return slack_bot_send(bot_token, channel, session)
+    if bot_token or channel:
+        log.warning("alerting disabled: need BOTH alert_slack_bot_token and alert_slack_channel")
+    return None
